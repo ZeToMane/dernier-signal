@@ -1,4 +1,4 @@
-import * as THREE from "three/webgpu";
+import * as THREE from "three";
 import Experience from "./Experience";
 
 export default class Camera {
@@ -24,7 +24,7 @@ export default class Camera {
             0.1,
             100,
         );
-        this.instance.position.set(0, 0, 0.5);
+        this.instance.position.set(0, 0, 5);
         this.scene.add(this.instance);
     }
 

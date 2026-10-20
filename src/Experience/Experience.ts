@@ -1,4 +1,4 @@
-import * as THREE from "three/webgpu";
+import * as THREE from "three";
 import Sizes from "./Utils/Sizes";
 import Time from "./Utils/Time";
 import Camera from "./Camera";
@@ -44,5 +44,6 @@ export default class Experience {
 
     update() {
         this.world.update();
+        this.renderer.update();
     }
 }

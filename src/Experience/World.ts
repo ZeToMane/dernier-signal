@@ -1,6 +1,9 @@
 import * as THREE from "three";
 import Experience from "./Experience";
 
+//Scenes
+import Demo from "./Scenes/Demo";
+
 // Importe tes futures scènes ici
 // import MainMenu from "./MainMenu";
 // import LevelOne from "./LevelOne";
@@ -32,6 +35,12 @@ export default class World {
         // this.scenes['level1'] = new LevelOne();
         // Définir la scène de départ
         // this.switchScene('menu');
+
+        // Instanciation de toutes les scènes pour les garder en mémoire
+        this.scenes["demo"] = new Demo();
+
+        // Définir la scène de départ
+        this.switchScene("demo");
     }
 
     switchScene(sceneName: string) {
