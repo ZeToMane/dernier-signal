@@ -193,3 +193,9 @@ export default class World {
 ```
 
 That's it! The `World` class will automatically handle rendering your `LevelOne` container and will trigger your `update()` method on every frame as long as it is the active scene.
+
+---
+
+## Comming Soon
+
+Game logic and Audio management code will arrive soon to be drivers of the game experience, for now they are under developpment
