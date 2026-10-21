@@ -24,10 +24,10 @@ export class GameEngine {
     tickMs: number = 25;
     gameLoopId: number | null = null;
 
-    // FIX: stored on the instance so restarting a level updates them
+    // Fired ~scheduleAheadTime before each note. Playback is decided outside
+    // (a missed note must stay silent).
     onSpawnVisual: ((note: ChartNote, absoluteHitTime: number) => void) | null =
         null;
-    hitSfxId: string = "hitSfx";
 
     constructor(audioEngine: AudioEngine) {
         this.audio = audioEngine;
@@ -37,13 +37,11 @@ export class GameEngine {
         chart: ChartData,
         bgmId: string,
         onSpawnVisual: (note: ChartNote, absoluteHitTime: number) => void,
-        hitSfxId: string = "hitSfx", // FIX: no longer hardcoded
     ): void {
         this.chart = chart;
         this.noteIndex = 0;
         this.loopCount = 0;
         this.onSpawnVisual = onSpawnVisual;
-        this.hitSfxId = hitSfxId;
 
         // 1. Ask the audio engine exactly how long this file is down to the microsecond
         this.trackDuration = this.audio.getBufferDuration(bgmId);
@@ -88,8 +86,6 @@ export class GameEngine {
                 // Calculate exact hardware time: Start + (Loops * TrackLength) + NoteTime
                 const absoluteHitTime = this.startTime + noteSongTime;
 
-                // Schedule audio and visual triggers
-                this.audio.scheduleSound(this.hitSfxId, absoluteHitTime);
                 this.onSpawnVisual?.(note, absoluteHitTime);
 
                 this.noteIndex++;

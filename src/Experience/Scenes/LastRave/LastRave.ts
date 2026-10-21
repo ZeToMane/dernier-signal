@@ -1,6 +1,10 @@
 import * as THREE from "three";
 import Scene from "../../Scene";
-import { createDebugPanel } from "./debug/createDebugPanel";
+import { GameExperience } from "../../Game/GameExperience";
+import {
+    createDebugPanel,
+    DEFAULT_LIGHTING_PARAMS,
+} from "./debug/createDebugPanel";
 import { Hud, loadHudFonts } from "./hud/Hud";
 import {
     designToScreen,
@@ -17,15 +21,13 @@ import {
     DEFAULT_POSTER_PARAMS,
     type Poster,
 } from "./objects/createPoster";
+import { createEnvironment, type BunkerEnvironment } from "./objects/environment/createEnvironment";
 import { createScreen, SCREEN_SURFACE_Z } from "./objects/createScreen";
 import { createWall } from "./objects/createWall";
 
 const SCREEN_Z = 0.06;
 /** Share of the viewport the screen should fill, taken from the mockup. */
 const SCREEN_FILL = 0.82;
-const GLOW_INTENSITY = 18;
-/** Neutral fill keeping the wall readable while the screen is off; fades out as the green glow takes over. */
-const ROOM_LIGHT_INTENSITY = 40;
 
 type Globe = ReturnType<typeof createGlobe>;
 
@@ -33,13 +35,19 @@ export default class LastRave extends Scene {
     ready = false;
 
     hud!: Hud;
+    game = new GameExperience();
     globe!: Globe;
     poster!: Poster;
+    environment!: BunkerEnvironment;
     screenGlow!: THREE.PointLight;
     roomLight!: THREE.PointLight;
+    topLight!: THREE.DirectionalLight;
+    ambientLight!: THREE.AmbientLight;
+    lastFlicker = 1;
 
     cameraMotion = { ...DEFAULT_CAMERA_MOTION };
     posterParams = { ...DEFAULT_POSTER_PARAMS };
+    lightingParams = { ...DEFAULT_LIGHTING_PARAMS };
     posterMap: THREE.Texture | null = null;
     posterViewHeight = 1;
     cameraDistance = 0;
@@ -68,11 +76,21 @@ export default class LastRave extends Scene {
         this.setLights();
         this.setPosterTexture();
         this.setDebug();
+        this.bindRhythm();
 
         this.experience.sizes.on("resize", () => this.resize());
         this.resize();
 
         this.ready = true;
+    }
+
+    bindRhythm() {
+        this.game.whenChartReady((chart, loopDuration) => {
+            this.hud.setRhythmChart(chart.notes, loopDuration);
+        });
+        this.game.whenHit((lane, noteTime, absSongTime) => {
+            this.hud.registerRhythmHit(lane, noteTime, absSongTime);
+        });
     }
 
     get maxAnisotropy() {
@@ -100,30 +118,40 @@ export default class LastRave extends Scene {
         screen.add(this.globe.group);
 
         this.poster = createPoster(this.posterParams);
+        this.environment = createEnvironment();
 
-        this.container.add(createWall(), screen, this.poster.mesh);
+        this.experience.scene.background = new THREE.Color("#010302");
+        this.container.add(createWall(), this.environment.group, screen, this.poster.mesh);
     }
 
     setLights() {
-        this.screenGlow = new THREE.PointLight(PALETTE.green, 0, 10, 2);
-        this.screenGlow.position.set(0, 0, 1.2);
+        this.screenGlow = new THREE.PointLight(PALETTE.green, 0, 8, 1.8);
+        this.screenGlow.position.set(0.25, 0.15, 0.85);
 
         this.roomLight = new THREE.PointLight(
             "#9fb8ae",
-            ROOM_LIGHT_INTENSITY,
+            this.lightingParams.room,
             10,
             2,
         );
         this.roomLight.position.set(0, 0, 1.2);
 
-        const topLight = new THREE.DirectionalLight("#9fb8ae", 0.8);
-        topLight.position.set(0.5, 3, 2);
+        this.topLight = new THREE.DirectionalLight(
+            "#8aa198",
+            this.lightingParams.key,
+        );
+        this.topLight.position.set(1.4, 2.2, 3.2);
+
+        this.ambientLight = new THREE.AmbientLight(
+            "#3d5248",
+            this.lightingParams.ambient,
+        );
 
         this.container.add(
             this.screenGlow,
             this.roomLight,
-            topLight,
-            new THREE.AmbientLight("#4a6a5f", 0.6),
+            this.topLight,
+            this.ambientLight,
         );
     }
 
@@ -142,29 +170,37 @@ export default class LastRave extends Scene {
     }
 
     setDebug() {
-        createDebugPanel(this.hud, this.cameraMotion, this.posterParams, {
-            onGlobeBoost: () => this.globe.triggerBoost(),
-            onPosterFly: () => {
-                if (this.poster.gone || this.poster.flying) return;
-                this.poster.fly();
-                this.punch = { elapsed: 0 };
-                // Screen boots 200ms after the poster starts peeling off.
-                this.powerOnTimer = window.setTimeout(
-                    () => this.powerOn(),
-                    Math.max(0.02, this.posterParams.windCamHit) * 1000 + 200,
-                );
+        createDebugPanel(
+            this.hud,
+            this.cameraMotion,
+            this.posterParams,
+            this.lightingParams,
+            {
+                onGlobeBoost: () => this.globe.triggerBoost(),
+                onPosterFly: () => {
+                    if (this.poster.gone || this.poster.flying) return;
+                    this.poster.fly();
+                    this.punch = { elapsed: 0 };
+                    // Screen boots 200ms after the poster starts peeling off.
+                    this.powerOnTimer = window.setTimeout(
+                        () => this.powerOn(),
+                        Math.max(0.02, this.posterParams.windCamHit) * 1000 +
+                            200,
+                    );
+                },
+                onPosterReset: () => {
+                    if (this.poster.gone) this.spawnPoster();
+                    else this.poster.reset();
+                    this.resetPunch();
+                    this.powerOff();
+                },
+                onSignalStage: (count) => {
+                    if (count > 0 && !this.hud.isPowered) this.powerOn();
+                    this.hud.setSignalStage(count);
+                    if (count >= 4) this.game.playDrop();
+                },
             },
-            onPosterReset: () => {
-                if (this.poster.gone) this.spawnPoster();
-                else this.poster.reset();
-                this.resetPunch();
-                this.powerOff();
-            },
-            onSignalStage: (count) => {
-                if (count > 0 && !this.hud.isPowered) this.powerOn();
-                this.hud.setSignalStage(count);
-            },
-        });
+        );
     }
 
     applyPosterMap() {
@@ -218,11 +254,13 @@ export default class LastRave extends Scene {
     }
 
     update() {
+        this.game.update();
         if (!this.ready) return;
 
         const time = this.experience.time.elapsed / 1000;
         const dt = this.experience.time.delta / 1000;
 
+        this.hud.setRhythmSongTime(this.game.songTime());
         this.hud.update(dt);
         if (this.hud.showsGlobe !== this.globeShown) {
             this.globeShown = this.hud.showsGlobe;
@@ -232,6 +270,11 @@ export default class LastRave extends Scene {
         this.poster.update(time, dt);
 
         this.updateScreenPower(dt);
+        this.environment.update(time, dt, {
+            screenPower: this.screenPower,
+            flicker: this.lastFlicker,
+            signalStage: this.hud.signalsFound,
+        });
         this.updatePunch(dt);
         this.updateCamera();
     }
@@ -242,8 +285,13 @@ export default class LastRave extends Scene {
         // Neon-tube style flicker while the screen warms up.
         const warming = this.screenPowerTarget === 1 && this.screenPower < 0.97;
         const flicker = warming && Math.random() < 0.25 ? 0.3 : 1;
-        this.screenGlow.intensity = GLOW_INTENSITY * this.screenPower * flicker;
-        this.roomLight.intensity = ROOM_LIGHT_INTENSITY * (1 - this.screenPower);
+        this.lastFlicker = flicker;
+
+        const { ambient, room, key, screenGlow } = this.lightingParams;
+        this.ambientLight.intensity = ambient;
+        this.topLight.intensity = key;
+        this.screenGlow.intensity = screenGlow * this.screenPower * flicker;
+        this.roomLight.intensity = room * (1 - this.screenPower);
         this.poster.setGlow(0.12 * this.screenPower * flicker);
     }
 

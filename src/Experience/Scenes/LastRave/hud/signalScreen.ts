@@ -90,52 +90,36 @@ type CurveConfig = {
   seed: number
 }
 
-/** Note charts — each peak crosses the cursor exactly when its note must be played. */
+/** Lane traces — notes come from the rhythm chart via `setChart`. */
 const CURVES: CurveConfig[] = [
   {
     color: '#f0c75e',
     amp: 22,
     cycles: 2.5,
-    loop: 8,
-    notes: [
-      { at: 1, len: 0.35 },
-      { at: 2.5, len: 0.35 },
-      { at: 4, len: 0.35 },
-      { at: 4.75, len: 0.35 },
-      { at: 6.5, len: 0.35 },
-    ],
+    loop: 6,
+    notes: [],
     seed: 1.7,
   },
   {
     color: '#2fe0a0',
     amp: 20,
     cycles: 2,
-    loop: 8,
-    notes: [
-      { at: 0.5, len: 0.3 },
-      { at: 2, len: 0.3 },
-      { at: 3.5, len: 0.3 },
-      { at: 5, len: 0.3 },
-      { at: 5.5, len: 0.3 },
-      { at: 7, len: 0.3 },
-    ],
+    loop: 6,
+    notes: [],
     seed: 4.3,
   },
   {
     color: '#3cc6e6',
     amp: 20,
     cycles: 3,
-    loop: 8,
-    notes: [
-      { at: 1.5, len: 0.45 },
-      { at: 3, len: 0.45 },
-      { at: 4.5, len: 0.45 },
-      { at: 6, len: 0.45 },
-      { at: 7.25, len: 0.45 },
-    ],
+    loop: 6,
+    notes: [],
     seed: 8.9,
   },
 ]
+
+/** Visual width of a hit peak (seconds). */
+const NOTE_PEAK_LEN = 0.22
 
 /** Chart scroll speed (design px / s), right → left, shared by all traces. */
 const SCROLL_SPEED = 70
@@ -329,9 +313,16 @@ const baselineAt = (wx: number, seed: number, time: number) =>
  * Peak offset (design px, up = positive) at chart position `wx`, 0 between notes.
  * Amplitude breathes slowly so the wave packets shrink / grow over time.
  */
-const peakAt = (wx: number, cfg: CurveConfig, time: number) => {
+const peakAt = (
+  wx: number,
+  cfg: CurveConfig,
+  time: number,
+  dampOf?: (noteAt: number, chartTime: number) => number,
+) => {
   const loopPx = cfg.loop * SCROLL_SPEED
   const local = ((wx % loopPx) + loopPx) % loopPx
+  // Unwrapped chart time under this pixel — identifies which loop occurrence we draw.
+  const chartTime = wx / SCROLL_SPEED
   // Slow breathe ±12% + a faster micro-flutter ±5%.
   const breathe =
     1 +
@@ -347,7 +338,15 @@ const peakAt = (wx: number, cfg: CurveConfig, time: number) => {
       // Tiny phase jitter so oscillations inside the peak aren't perfectly locked.
       const flutter = Math.sin(time * 7 + cfg.seed * 3 + u * 4) * 0.06
       const cycles = note.cycles ?? cfg.cycles
-      return Math.sin(u * cycles * Math.PI * 2 + flutter) * env * cfg.amp * (note.amp ?? 1) * breathe
+      const damp = dampOf?.(note.at, chartTime) ?? 1
+      return (
+        Math.sin(u * cycles * Math.PI * 2 + flutter) *
+        env *
+        cfg.amp *
+        (note.amp ?? 1) *
+        breathe *
+        damp
+      )
     }
   }
   return 0
@@ -373,6 +372,69 @@ export class SignalScreen {
   private acquireAt: number | null = null
   private acquireIndex = 0
   private now = 0
+  /**
+   * Audio song time (seconds since LOOP/DROP start). When set, peaks scroll
+   * against this clock so a note at `t` crosses the cursor at song time `t`.
+   */
+  private songTime: number | null = null
+  /**
+   * Successful hits keyed by absolute song time of the note occurrence.
+   * Only that pass is collapsed — the next loop arrives full height.
+   */
+  private readonly hitDamps: {
+    lane: number
+    noteAt: number
+    /** Absolute song time of this note occurrence (unwrapped). */
+    absAt: number
+    damp: number
+  }[] = []
+
+  /** Inject the playable chart — one peak per note, loop length = track duration. */
+  setChart(notes: { time: number; lane: number }[], loopDuration: number) {
+    const loop = Math.max(0.001, loopDuration)
+    this.hitDamps.length = 0
+    for (let i = 0; i < CURVES.length; i++) {
+      const curve = CURVES[i]!
+      curve.loop = loop
+      curve.notes = notes
+        .filter((n) => n.lane === i && n.time >= 0 && n.time < loop)
+        .map((n) => ({ at: n.time, len: NOTE_PEAK_LEN }))
+    }
+  }
+
+  /** Drive the graph from the AudioEngine clock (null = decorative / pre-music). */
+  setSongTime(songTime: number | null) {
+    this.songTime = songTime
+  }
+
+  /**
+   * Collapse the peak for a successfully caught note.
+   * `absSongTime` = unwrapped song time of that occurrence (not the press time).
+   */
+  registerHit(lane: number, noteTime: number, absSongTime: number) {
+    this.hitDamps.push({
+      lane,
+      noteAt: noteTime,
+      absAt: absSongTime,
+      damp: 1,
+    })
+  }
+
+  /**
+   * Damp only if this pixel is drawing the exact occurrence that was hit.
+   * `chartTime` = wx / SCROLL_SPEED (unwrapped).
+   */
+  private hitDamp(lane: number, noteAt: number, chartTime: number) {
+    let damp = 1
+    for (const hit of this.hitDamps) {
+      if (hit.lane !== lane) continue
+      if (Math.abs(hit.noteAt - noteAt) > 1e-3) continue
+      // Same loop pass: chart time under the peak ≈ absolute note time.
+      if (Math.abs(chartTime - hit.absAt) > NOTE_PEAK_LEN) continue
+      damp = Math.min(damp, hit.damp)
+    }
+    return damp
+  }
 
   get count() {
     return this.raveAt === null ? this.found : 4
@@ -511,6 +573,15 @@ export class SignalScreen {
     if (this.meterBoost) {
       this.meterBoost.elapsed += dt
       if (this.meterBoost.elapsed >= this.meterBoost.duration) this.meterBoost = null
+    }
+
+    // Successful hits: drop fast, stay flat until the peak has left the left edge.
+    const song = this.songTime ?? now
+    const clearAfter = (CURSOR_X - GRAPH.x) / SCROLL_SPEED + NOTE_PEAK_LEN
+    for (let i = this.hitDamps.length - 1; i >= 0; i--) {
+      const hit = this.hitDamps[i]!
+      hit.damp = Math.max(0.05, hit.damp - dt * 10)
+      if (song > hit.absAt + clearAfter) this.hitDamps.splice(i, 1)
     }
 
     this.accuracyRetargetIn -= dt
@@ -747,12 +818,17 @@ export class SignalScreen {
     const ampBoost = 1 + vibrate * 0.35 + (isNew ? (1 - r) * 0.55 : 0)
     const color = sync > 0 ? mixHex(curve.color, PALETTE.green, sync) : curve.color
 
-    // Chart position under screen x — a note at `at` sits on the cursor when clock === at.
-    const wxAt = (sx: number) => clock * SCROLL_SPEED + (sx - CURSOR_X)
+    // Chart position under screen x — a note at `at` sits on the cursor when
+    // songTime === at (music clock). Falls back to reveal-local clock before audio.
+    const scrollClock = this.songTime ?? clock
+    const wxAt = (sx: number) => scrollClock * SCROLL_SPEED + (sx - CURSOR_X)
     // Shared beat clock — identical for the three traces and the merged one.
     const syncWxAt = (sx: number) => t * SCROLL_SPEED + (sx - CURSOR_X)
     const peakFor = (sx: number, wx: number) => {
-      const own = peakAt(wx, curve, now) * ampBoost
+      const own =
+        peakAt(wx, curve, now, (noteAt, chartTime) =>
+          this.hitDamp(index, noteAt, chartTime),
+        ) * ampBoost
       if (sync <= 0) return own
       return own * (1 - sync) + peakAt(syncWxAt(sx), SYNC_CURVE, now) * sync
     }
