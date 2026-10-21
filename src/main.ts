@@ -1,3 +1,5 @@
+import "@fontsource/orbitron/900.css";
+import "@fontsource/share-tech-mono/400.css";
 import Experience from "./Experience/Experience";
 import "./style.css";
 

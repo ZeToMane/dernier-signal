@@ -18,7 +18,7 @@ export default class Demo extends Scene {
         this.cube = new THREE.Mesh(geometry, material);
 
         // IMPORTANT: Add objects to this.container, NOT directly to this.experience.scene
-        this.container.add(this.cube);
+        this.container.add(this.cube, new THREE.AmbientLight(0xffffff, 3));
     }
 
     // World.ts calls this function on every frame if this is the active scene

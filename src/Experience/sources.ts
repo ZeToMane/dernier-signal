@@ -1,13 +1,13 @@
 export interface Source {
     name: string;
-    type: "gltfModel";
+    type: "gltfModel" | "texture";
     path: string;
 }
 
 export default [
-    /* {
-        name: "sceneModel",
-        type: "gltfModel",
-        path: "/assets/practice_head_sculpt-draco.glb",
-    }, */
+    {
+        name: "posterTexture",
+        type: "texture",
+        path: "/textures/ripped-papper.webp",
+    },
 ] as Source[];
