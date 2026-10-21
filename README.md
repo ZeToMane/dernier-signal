@@ -112,6 +112,8 @@ export default [
 ] as Source[];
 ```
 
+Supported types are `gltfModel` and `texture` (loaded with `THREE.TextureLoader`).
+
 ### `Resources.ts` (The Loader)
 
 When the application starts, `Resources.ts` reads the `sources.ts` manifest and preloads everything.

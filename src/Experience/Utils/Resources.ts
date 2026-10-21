@@ -1,3 +1,4 @@
+import { TextureLoader } from 'three';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import { DRACOLoader } from 'three/examples/jsm/loaders/DRACOLoader.js';
 import EventEmitter from './EventEmitter';
@@ -8,7 +9,7 @@ export default class Resources extends EventEmitter {
   items: Record<string, any> = {};
   toLoad: number;
   loaded = 0;
-  loaders: { gltfLoader: GLTFLoader };
+  loaders: { gltfLoader: GLTFLoader; textureLoader: TextureLoader };
 
   constructor(sources: Source[]) {
     super();
@@ -24,15 +25,23 @@ export default class Resources extends EventEmitter {
     const gltfLoader = new GLTFLoader();
     gltfLoader.setDRACOLoader(dracoLoader);
 
-    this.loaders = { gltfLoader };
+    this.loaders = { gltfLoader, textureLoader: new TextureLoader() };
 
     this.startLoading();
+  }
+
+  get isReady() {
+    return this.loaded === this.toLoad;
   }
 
   startLoading() {
     for (const source of this.sources) {
       if (source.type === 'gltfModel') {
         this.loaders.gltfLoader.load(source.path, (file) => {
+          this.sourceLoaded(source, file);
+        });
+      } else if (source.type === 'texture') {
+        this.loaders.textureLoader.load(source.path, (file) => {
           this.sourceLoaded(source, file);
         });
       }

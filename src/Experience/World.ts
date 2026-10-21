@@ -3,10 +3,7 @@ import Experience from "./Experience";
 
 //Scenes
 import Demo from "./Scenes/Demo";
-
-// Importe tes futures scènes ici
-// import MainMenu from "./MainMenu";
-// import LevelOne from "./LevelOne";
+import LastRave from "./Scenes/LastRave/LastRave";
 
 export default class World {
     experience: Experience;
@@ -23,24 +20,16 @@ export default class World {
         this.scene = this.experience.scene;
         this.resources = this.experience.resources;
 
-        const ambientLight = new THREE.AmbientLight(0xffffff, 3);
-        this.scene.add(ambientLight);
-
         this.preloadScenes();
     }
 
     preloadScenes() {
         // Instanciation de toutes les scènes pour les garder en mémoire
-        // this.scenes['menu'] = new MainMenu();
-        // this.scenes['level1'] = new LevelOne();
-        // Définir la scène de départ
-        // this.switchScene('menu');
-
-        // Instanciation de toutes les scènes pour les garder en mémoire
         this.scenes["demo"] = new Demo();
+        this.scenes["lastRave"] = new LastRave();
 
         // Définir la scène de départ
-        this.switchScene("demo");
+        this.switchScene("lastRave");
     }
 
     switchScene(sceneName: string) {
