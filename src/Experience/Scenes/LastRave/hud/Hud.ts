@@ -243,6 +243,11 @@ export class Hud {
     this.signalScreen.setSongTime(songTime)
   }
 
+  /** Live rhythm accuracy (0–100), the target to hold and 0..1 hold progress. */
+  setRhythmAccuracy(value: number, threshold: number, hold: number) {
+    this.signalScreen.setAccuracy(value, threshold, hold)
+  }
+
   /** Visual feedback: collapse the peak for a caught note. */
   registerRhythmHit(lane: number, noteTime: number, absSongTime: number) {
     this.signalScreen.registerHit(lane, noteTime, absSongTime)

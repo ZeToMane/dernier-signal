@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="fr">
+    <head>
+        <meta charset="UTF-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+        <title>Dernier Signal — Test Arduino</title>
+        <style>
+            body { font-family: monospace; max-width: 640px; margin: 2rem auto; padding: 0 1rem; }
+            section { border: 1px solid #ccc; padding: 0.5rem 1rem; margin: 1rem 0; }
+            meter { width: 100%; }
+            .flash { background: #ffe066; }
+            #log { height: 8rem; overflow: auto; background: #f4f4f4; padding: 0.5rem; white-space: pre; }
+        </style>
+    </head>
+    <body>
+        <h1>Test Arduino</h1>
+        <p>
+            <button id="connect">Connecter</button>
+            <button id="disconnect" disabled>Déconnecter</button>
+            <button id="led" disabled>Clignoter LED</button>
+            <span id="status">déconnecté</span>
+        </p>
+
+        <section id="horn">
+            <h2>Corne (micro A1)</h2>
+            <p>Amplitude : <span id="horn-level">0</span> — souffles : <span id="horn-count">0</span></p>
+            <meter id="horn-meter" min="0" max="1023" value="0"></meter>
+            <label>Seuil <input id="horn-threshold" type="range" min="10" max="1023" value="200" /> <span id="horn-threshold-value">200</span></label>
+        </section>
+
+        <section id="star">
+            <h2>Étoile (photorésistance A3)</h2>
+            <p>Brut : <span id="star-raw">0</span> — normalisé : <span id="star-value">0.00</span></p>
+            <meter id="star-meter" min="0" max="1" value="0"></meter>
+            <p>
+                <button id="star-min">Calibrer sombre</button>
+                <button id="star-max">Calibrer lumineux</button>
+                min <span id="star-min-value">0</span> / max <span id="star-max-value">1023</span>
+            </p>
+        </section>
+
+        <section id="hourglass">
+            <h2>Sablier (tilt D11)</h2>
+            <p>Kicks : <span id="hourglass-count">0</span></p>
+        </section>
+
+        <div id="log"></div>
+
+        <script type="module" src="/src/arduino-test.ts"></script>
+    </body>
+</html>
