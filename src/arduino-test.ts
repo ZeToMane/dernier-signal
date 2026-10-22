@@ -86,6 +86,14 @@ star.on("change", (value: number) => {
 });
 
 // ---- Sablier -----------------------------------------------------------------
+arduino.on("tilt", (contact: boolean) => {
+    $("hourglass-state").textContent = contact ? "CONTACT" : "ouvert";
+});
+
+hourglass.on("change", (contact: boolean) => {
+    write(`Sablier : ${contact ? "CONTACT" : "ouvert"}`);
+});
+
 hourglass.on("kick", () => {
     $("hourglass-count").textContent = String(hourglass.count);
     flash("hourglass");

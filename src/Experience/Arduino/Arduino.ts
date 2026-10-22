@@ -7,7 +7,7 @@ const BAUD_RATE = 115200;
 
 /**
  * Web Serial bridge to the board (see arduino/dernier-signal/dernier-signal.ino).
- * Events: "connected", "disconnected", "micro" (amplitude), "light" (raw), "kick".
+ * Events: "connected", "disconnected", "micro" (amplitude), "light" (raw), "tilt" (contact), "kick".
  */
 export default class Arduino extends EventEmitter {
     horn: Horn;
@@ -100,5 +100,6 @@ export default class Arduino extends EventEmitter {
 
         if (key === "M") this.trigger("micro", [value]);
         else if (key === "L") this.trigger("light", [value]);
+        else if (key === "T") this.trigger("tilt", [value === 1]);
     }
 }
