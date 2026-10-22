@@ -1,74 +1,87 @@
-import { CanvasTexture, Mesh, MeshStandardMaterial, PlaneGeometry, SRGBColorSpace } from 'three'
+import {
+    Mesh,
+    MeshStandardMaterial,
+    NoColorSpace,
+    PlaneGeometry,
+    RepeatWrapping,
+    SRGBColorSpace,
+    Vector2,
+    type Texture,
+} from "three";
 
-const WALL_WIDTH = 16
-const WALL_HEIGHT = 9
+const WALL_WIDTH = 16;
+const WALL_HEIGHT = 9;
 
-function seededRandom(seed: number) {
-  return () => {
-    seed = (seed + 0x6d2b79f5) | 0
-    let t = Math.imul(seed ^ (seed >>> 15), 1 | seed)
-    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t
-    return ((t ^ (t >>> 14)) >>> 0) / 4294967296
-  }
-}
+/** World size of one square concrete tile — keeps U/V aspect 1:1 on the 16×9 plane. */
+const CONCRETE_TILE_SIZE = 4;
 
-function createWallTexture() {
-  const canvas = document.createElement('canvas')
-  canvas.width = 2048
-  canvas.height = 1152
-  const ctx = canvas.getContext('2d')!
-  const random = seededRandom(7)
+export type WallLightParams = {
+    color: string;
+    roughness: number;
+    metalness: number;
+    normalScale: number;
+};
 
-  ctx.fillStyle = '#080a09'
-  ctx.fillRect(0, 0, canvas.width, canvas.height)
-
-  for (let y = 0; y < canvas.height; ) {
-    const rowHeight = 60 + random() * 140
-    for (let x = 0; x < canvas.width; ) {
-      const panelWidth = 80 + random() * 220
-      const shade = 10 + Math.floor(random() * 10)
-      ctx.fillStyle = `rgb(${shade}, ${shade + 3}, ${shade + 2})`
-      ctx.fillRect(x + 3, y + 3, panelWidth - 6, rowHeight - 6)
-      ctx.strokeStyle = 'rgba(255, 255, 255, 0.03)'
-      ctx.lineWidth = 1
-      ctx.strokeRect(x + 5, y + 5, panelWidth - 10, rowHeight - 10)
-      x += panelWidth
-    }
-    y += rowHeight
-  }
-
-  ctx.strokeStyle = 'rgba(40, 255, 160, 0.07)'
-  ctx.lineWidth = 2
-  for (let i = 0; i < 70; i++) {
-    let x = random() * canvas.width
-    let y = random() * canvas.height
-    ctx.beginPath()
-    ctx.moveTo(x, y)
-    for (let step = 0; step < 4; step++) {
-      if (random() > 0.5) x += (random() - 0.5) * 300
-      else y += (random() - 0.5) * 300
-      ctx.lineTo(x, y)
-    }
-    ctx.stroke()
-  }
-
-  const grain = ctx.getImageData(0, 0, canvas.width, canvas.height)
-  for (let i = 0; i < grain.data.length; i += 4) {
-    const noise = (random() - 0.5) * 14
-    grain.data[i] += noise
-    grain.data[i + 1] += noise
-    grain.data[i + 2] += noise
-  }
-  ctx.putImageData(grain, 0, 0)
-
-  const texture = new CanvasTexture(canvas)
-  texture.colorSpace = SRGBColorSpace
-  return texture
-}
+export const DEFAULT_WALL_LIGHT_PARAMS: WallLightParams = {
+    color: "#3e4642",
+    roughness: 1,
+    metalness: 0.6,
+    normalScale: 0.2,
+};
 
 export function createWall() {
-  return new Mesh(
-    new PlaneGeometry(WALL_WIDTH, WALL_HEIGHT),
-    new MeshStandardMaterial({ map: createWallTexture(), roughness: 0.85, metalness: 0.2 }),
-  )
+    return new Mesh(
+        new PlaneGeometry(WALL_WIDTH, WALL_HEIGHT),
+        new MeshStandardMaterial({
+            color: DEFAULT_WALL_LIGHT_PARAMS.color,
+            roughness: DEFAULT_WALL_LIGHT_PARAMS.roughness,
+            metalness: DEFAULT_WALL_LIGHT_PARAMS.metalness,
+        }),
+    );
+}
+
+export function applyWallLightParams(wall: Mesh, params: WallLightParams) {
+    const material = wall.material as MeshStandardMaterial;
+    material.color.set(params.color);
+    material.roughness = params.roughness;
+    material.metalness = params.metalness;
+    material.normalScale.set(params.normalScale, params.normalScale);
+    material.needsUpdate = true;
+}
+
+export function applyWallTextures(
+    wall: Mesh,
+    textures: {
+        albedo: Texture;
+        roughness: Texture;
+        normal: Texture;
+    },
+    anisotropy: number,
+    lightParams: WallLightParams = DEFAULT_WALL_LIGHT_PARAMS,
+) {
+    const { albedo, roughness, normal } = textures;
+
+    const repeatX = WALL_WIDTH / CONCRETE_TILE_SIZE;
+    const repeatY = WALL_HEIGHT / CONCRETE_TILE_SIZE;
+
+    for (const texture of [albedo, roughness, normal]) {
+        texture.wrapS = RepeatWrapping;
+        texture.wrapT = RepeatWrapping;
+        texture.repeat.set(repeatX, repeatY);
+        texture.anisotropy = anisotropy;
+        texture.needsUpdate = true;
+    }
+
+    // Color vs data maps — wrong spaces make normals look cratered / oily.
+    albedo.colorSpace = SRGBColorSpace;
+    roughness.colorSpace = NoColorSpace;
+    normal.colorSpace = NoColorSpace;
+
+    const material = wall.material as MeshStandardMaterial;
+    material.map = albedo;
+    material.roughnessMap = roughness;
+    material.normalMap = normal;
+    // Ensure normalScale exists before applyWallLightParams.
+    material.normalScale = new Vector2(1, 1);
+    applyWallLightParams(wall, lightParams);
 }

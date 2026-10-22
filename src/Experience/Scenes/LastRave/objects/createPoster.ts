@@ -1,4 +1,12 @@
-import { Color, DoubleSide, Mesh, PlaneGeometry, ShaderMaterial, type Texture } from 'three'
+import {
+  Color,
+  DoubleSide,
+  Mesh,
+  PlaneGeometry,
+  ShaderMaterial,
+  Vector3,
+  type Texture,
+} from 'three'
 
 /** A-series portrait ratio (height / width). */
 export const POSTER_RATIO = Math.SQRT2
@@ -101,25 +109,96 @@ const vertexShader = /* glsl */ `
 
 const fragmentShader = /* glsl */ `
   uniform vec3 uPaper;
-  uniform vec3 uGlowColor;
   uniform sampler2D uMap;
+  uniform sampler2D uNormalMap;
+  uniform sampler2D uRoughnessMap;
   uniform float uHasMap;
-  uniform float uLight;
-  uniform float uGlow;
+  uniform float uHasNormal;
+  uniform float uHasRoughness;
+  uniform float uNormalScale;
+
+  // Scene lights (view space) — same bunkers lights as the concrete wall.
+  uniform vec3 uAmbient;
+  uniform vec3 uKeyColor;
+  uniform vec3 uKeyDir;
+  uniform vec3 uRoomColor;
+  uniform vec3 uRoomPos;
+  uniform float uRoomDistance;
+  uniform float uRoomDecay;
+  uniform vec3 uGlowColor;
+  uniform vec3 uGlowPos;
+  uniform float uGlowIntensity;
+  uniform float uGlowDistance;
+  uniform float uGlowDecay;
 
   varying vec2 vUv;
   varying vec3 vViewPos;
 
+  vec3 perturbNormal(vec3 N, vec3 mapN) {
+    vec3 dp1 = dFdx(vViewPos);
+    vec3 dp2 = dFdy(vViewPos);
+    vec2 duv1 = dFdx(vUv);
+    vec2 duv2 = dFdy(vUv);
+    vec3 dp2perp = cross(dp2, N);
+    vec3 dp1perp = cross(N, dp1);
+    vec3 T = dp2perp * duv1.x + dp1perp * duv2.x;
+    vec3 B = dp2perp * duv1.y + dp1perp * duv2.y;
+    float invmax = inversesqrt(max(dot(T, T), dot(B, B)));
+    return normalize(mat3(T * invmax, B * invmax, N) * mapN);
+  }
+
+  float punctualAttenuation(float dist, float cutoff, float decay) {
+    float atten = 1.0 / max(pow(dist, max(decay, 0.01)), 0.01);
+    if (cutoff > 0.0) {
+      float ratio = clamp(1.0 - pow(dist / cutoff, 4.0), 0.0, 1.0);
+      atten *= ratio * ratio;
+    }
+    return atten;
+  }
+
   void main() {
-    vec3 n = normalize(cross(dFdx(vViewPos), dFdy(vViewPos)));
+    vec3 geoN = normalize(cross(dFdx(vViewPos), dFdy(vViewPos)));
+    vec3 n = geoN;
+    if (uHasNormal > 0.5) {
+      vec3 mapN = texture2D(uNormalMap, vUv).xyz * 2.0 - 1.0;
+      mapN.xy *= uNormalScale;
+      n = perturbNormal(geoN, mapN);
+    }
+    if (!gl_FrontFacing) n = -n;
+
     vec4 texel = uHasMap > 0.5 ? texture2D(uMap, vUv) : vec4(uPaper, 1.0);
-    // Only real alpha — never key RGB blacks (they're part of the artwork).
     if (texel.a < 0.02) discard;
     vec3 base = texel.rgb;
     if (!gl_FrontFacing) base = uPaper * 0.7;
 
-    float shade = 0.55 + 0.45 * abs(n.z);
-    vec3 color = base * shade * uLight + uGlowColor * uGlow * (0.4 + 0.6 * abs(n.z));
+    float rough = uHasRoughness > 0.5 ? texture2D(uRoughnessMap, vUv).r : 0.75;
+    rough = clamp((rough - 0.35) * 1.7 + 0.35, 0.0, 1.0);
+    float gloss = 1.0 - rough;
+
+    vec3 lit = uAmbient;
+
+    float kd = max(0.0, dot(n, uKeyDir));
+    lit += uKeyColor * kd;
+    vec3 Hk = normalize(uKeyDir + vec3(0.0, 0.0, 1.0));
+    lit += uKeyColor * pow(max(0.0, dot(n, Hk)), mix(6.0, 32.0, gloss)) * gloss * 0.25;
+
+    vec3 toRoom = uRoomPos - vViewPos;
+    float roomDist = length(toRoom);
+    vec3 Lr = toRoom / max(roomDist, 1e-4);
+    float roomAtten = punctualAttenuation(roomDist, uRoomDistance, uRoomDecay);
+    float rd = max(0.0, dot(n, Lr));
+    lit += uRoomColor * rd * roomAtten;
+
+    if (uGlowIntensity > 0.001) {
+      vec3 toGlow = uGlowPos - vViewPos;
+      float glowDist = length(toGlow);
+      vec3 Lg = toGlow / max(glowDist, 1e-4);
+      float glowAtten = punctualAttenuation(glowDist, uGlowDistance, uGlowDecay);
+      float gd = max(0.0, dot(n, Lg));
+      lit += uGlowColor * uGlowIntensity * (gd * 0.85 + 0.15) * glowAtten;
+    }
+
+    vec3 color = base * lit;
     gl_FragColor = vec4(color, texel.a);
 
     #include <tonemapping_fragment>
@@ -137,11 +216,25 @@ export function createPoster(params: PosterParams = { ...DEFAULT_POSTER_PARAMS }
       uWind: { value: 0 },
       uWindT: { value: 0 },
       uPaper: { value: new Color('#d9d3c5') },
-      uGlowColor: { value: new Color('#22f08f') },
       uMap: { value: null as Texture | null },
+      uNormalMap: { value: null as Texture | null },
+      uRoughnessMap: { value: null as Texture | null },
       uHasMap: { value: 0 },
-      uLight: { value: 0.42 },
-      uGlow: { value: 0 },
+      uHasNormal: { value: 0 },
+      uHasRoughness: { value: 0 },
+      uNormalScale: { value: 1.45 },
+      uAmbient: { value: new Color(0, 0, 0) },
+      uKeyColor: { value: new Color(0, 0, 0) },
+      uKeyDir: { value: new Vector3(0.3, 0.5, 0.8) },
+      uRoomColor: { value: new Color(0, 0, 0) },
+      uRoomPos: { value: new Vector3(0, 0, 1.4) },
+      uRoomDistance: { value: 8 },
+      uRoomDecay: { value: 2 },
+      uGlowColor: { value: new Color('#22f08f') },
+      uGlowPos: { value: new Vector3(0, 0, 0.55) },
+      uGlowIntensity: { value: 0 },
+      uGlowDistance: { value: 7 },
+      uGlowDecay: { value: 1.4 },
     },
     vertexShader,
     fragmentShader,
@@ -156,6 +249,7 @@ export function createPoster(params: PosterParams = { ...DEFAULT_POSTER_PARAMS }
   let flight: { elapsed: number } | null = null
   let viewHeight = POSTER_RATIO
   let gone = false
+  let normalEnabled = true
 
   const applyRest = () => {
     mesh.scale.setScalar((viewHeight * params.height) / POSTER_RATIO)
@@ -208,13 +302,57 @@ export function createPoster(params: PosterParams = { ...DEFAULT_POSTER_PARAMS }
       material.uniforms.uMap.value = texture
       material.uniforms.uHasMap.value = texture ? 1 : 0
     },
+    setNormalMap(texture: Texture | null, scale = 1.45) {
+      if (gone) return
+      material.uniforms.uNormalMap.value = texture
+      material.uniforms.uNormalScale.value = scale
+      material.uniforms.uHasNormal.value = texture && normalEnabled ? 1 : 0
+    },
+    /** Debug: show / hide the normal map without unloading it. */
+    setNormalEnabled(enabled: boolean) {
+      if (gone) return
+      normalEnabled = enabled
+      const hasMap = material.uniforms.uNormalMap.value != null
+      material.uniforms.uHasNormal.value = enabled && hasMap ? 1 : 0
+    },
+    setRoughnessMap(texture: Texture | null) {
+      if (gone) return
+      material.uniforms.uRoughnessMap.value = texture
+      material.uniforms.uHasRoughness.value = texture ? 1 : 0
+    },
     fitHeight(height: number) {
       viewHeight = height
       if (!gone && !flight) applyRest()
     },
-    setGlow(value: number) {
+    /** Sync bunker lights (view-space positions / dirs) so the paper matches the wall. */
+    setSceneLights(lights: {
+      ambient: Color
+      keyColor: Color
+      keyDir: Vector3
+      roomColor: Color
+      roomPos: Vector3
+      roomDistance: number
+      roomDecay: number
+      glowColor: Color
+      glowPos: Vector3
+      glowIntensity: number
+      glowDistance: number
+      glowDecay: number
+    }) {
       if (gone) return
-      material.uniforms.uGlow.value = value
+      const u = material.uniforms
+      ;(u.uAmbient.value as Color).copy(lights.ambient)
+      ;(u.uKeyColor.value as Color).copy(lights.keyColor)
+      ;(u.uKeyDir.value as Vector3).copy(lights.keyDir).normalize()
+      ;(u.uRoomColor.value as Color).copy(lights.roomColor)
+      ;(u.uRoomPos.value as Vector3).copy(lights.roomPos)
+      u.uRoomDistance.value = lights.roomDistance
+      u.uRoomDecay.value = lights.roomDecay
+      ;(u.uGlowColor.value as Color).copy(lights.glowColor)
+      ;(u.uGlowPos.value as Vector3).copy(lights.glowPos)
+      u.uGlowIntensity.value = lights.glowIntensity
+      u.uGlowDistance.value = lights.glowDistance
+      u.uGlowDecay.value = lights.glowDecay
     },
     fly() {
       if (gone || flight) return
