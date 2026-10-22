@@ -14,7 +14,14 @@ import {
     SCREEN_HEIGHT,
     SCREEN_WIDTH,
 } from "./layout";
-import { DEFAULT_CAMERA_MOTION } from "./objects/cameraMotion";
+import { createCameraRig, DEFAULT_CAMERA_MOTION } from "./objects/cameraMotion";
+import { applySpecularAATo, specularAA } from "./objects/specularAA";
+import { createSoundDesign, DEFAULT_SOUND_DESIGN } from "./audio/soundDesign";
+import {
+    createPostFx,
+    DEFAULT_POSTFX_PARAMS,
+    type PostFx,
+} from "./postfx/createPostFx";
 import { createGlobe } from "./objects/createGlobe";
 import {
     createPoster,
@@ -41,6 +48,125 @@ const SCREEN_FILL = 0.82;
 /** screenGlow only hits wall / steel — never the HUD glass (avoids the center hot disc). */
 const GLOW_LAYER = 1;
 
+/** Two flashlights wandering over the screen — people sweeping it with torches. */
+/**
+ * Three torches exploring the HUD border on a fixed loop — scared people
+ * checking the dark: slow creeping sweeps, stops to look, quick nervous darts.
+ */
+export type FlashlightParams = {
+    /** Off = torches parked at their loop start, no sweep / tremor. */
+    moving: boolean;
+    /** Duration of one loop (seconds) — every torch replays its path on this clock. */
+    period: number;
+    /** Distance from the HUD border, as a multiple of the path reach (1 = as authored). */
+    spread: number;
+    /** Distance in front of the wall. */
+    z: number;
+    /** Nervous hand shake amplitude. */
+    tremor: number;
+    /** Share of "Glow écran" each torch gets. */
+    share: number;
+    /** How much each torch's power drifts over time (0 = steady). */
+    variation: number;
+};
+
+export const DEFAULT_FLASHLIGHT_PARAMS: FlashlightParams = {
+    moving: true,
+    period: 26,
+    spread: 1,
+    z: 0.55,
+    tremor: 0.03,
+    share: 0.5,
+    variation: 0.35,
+};
+
+/**
+ * Keyframes: [angle° around the HUD (0 = right, 90 = top), reach (1 = on the
+ * border, > 1 outside), duration weight, hold fraction]. Each key holds (looks),
+ * then eases to the next. Short weights = nervous darts.
+ */
+type TorchKey = [angle: number, reach: number, weight: number, hold: number];
+
+/** Point on the HUD rectangle border (half-size units) — corners included, never inside. */
+const onBorder = (deg: number, reach: number): [number, number] => {
+    const a = THREE.MathUtils.degToRad(deg);
+    const c = Math.cos(a);
+    const s = Math.sin(a);
+    const m = Math.max(Math.abs(c), Math.abs(s));
+    return [(c / m) * reach, (s / m) * reach];
+};
+
+const easeInOutCubic = (t: number) => (t < 0.5 ? 4 * t * t * t : 1 - (-2 * t + 2) ** 3 / 2);
+
+function keyedPath(keys: TorchKey[]) {
+    const total = keys.reduce((sum, key) => sum + key[2], 0);
+    return (u: number): [number, number] => {
+        let start = 0;
+        for (let i = 0; i < keys.length; i++) {
+            const [angle, reach, weight, hold] = keys[i];
+            const span = weight / total;
+            if (u < start + span || i === keys.length - 1) {
+                const f = Math.min(1, (u - start) / span);
+                const t = easeInOutCubic(Math.max(0, (f - hold) / (1 - hold)));
+                const [nextAngle, nextReach] = keys[(i + 1) % keys.length];
+                return onBorder(angle + (nextAngle - angle) * t, reach + (nextReach - reach) * t);
+            }
+            start += span;
+        }
+        return onBorder(keys[0][0], keys[0][1]);
+    };
+}
+
+/**
+ * One zone of the border per torch (never close: ≥ ~1 apart, checked offline),
+ * together they reach all four sides every loop.
+ * - A: top + top-right. B: left side. C: bottom + bottom-right.
+ * `size` scales the distance to the wall (closer = tighter spot), `power` the
+ * intensity, `decay` the falloff sharpness.
+ */
+const FLASHLIGHT_SEEDS = [
+    {
+        path: keyedPath([
+            [118, 1.03, 3.2, 0.45],
+            [104, 1.08, 0.7, 0.2],
+            [66, 1.02, 4, 0.35],
+            [80, 1.1, 0.6, 0.15],
+            [36, 1.04, 3.6, 0.5],
+            [58, 1.06, 1.4, 0.3],
+        ]),
+        phase: 0,
+        size: 1,
+        power: 1,
+        decay: 1.4,
+    },
+    {
+        path: keyedPath([
+            [158, 1.04, 3, 0.5],
+            [200, 1.02, 4.2, 0.35],
+            [186, 1.1, 0.6, 0.15],
+            [226, 1.05, 3.4, 0.45],
+            [172, 1.08, 1.2, 0.25],
+        ]),
+        phase: 2.4,
+        size: 0.8,
+        power: 0.75,
+        decay: 1.6,
+    },
+    {
+        path: keyedPath([
+            [256, 1.03, 3.6, 0.4],
+            [292, 1.08, 0.7, 0.15],
+            [330, 1.02, 4, 0.45],
+            [312, 1.1, 0.6, 0.2],
+            [276, 1.05, 3.2, 0.35],
+        ]),
+        phase: 4.1,
+        size: 0.6,
+        power: 0.55,
+        decay: 1.8,
+    },
+];
+
 type Globe = ReturnType<typeof createGlobe>;
 
 export default class LastRave extends Scene {
@@ -53,13 +179,39 @@ export default class LastRave extends Scene {
     wall!: THREE.Mesh;
     screen!: Screen;
     environment!: BunkerEnvironment;
+    /** First torch — also drives the poster shader. */
     screenGlow!: THREE.PointLight;
+    flashlights: THREE.PointLight[] = [];
+    flashlightParams = { ...DEFAULT_FLASHLIGHT_PARAMS };
     roomLight!: THREE.PointLight;
     topLight!: THREE.DirectionalLight;
     ambientLight!: THREE.AmbientLight;
+    /** Debug only — floods the whole scene to inspect geometry / textures. */
+    debugFill!: THREE.HemisphereLight;
+    debugKey!: THREE.DirectionalLight;
+    debugLight = { enabled: false, intensity: 3 };
+    /** Same rig as the debug flood, tinted bunker green — a faint always-on base. */
+    greenFill!: THREE.HemisphereLight;
+    greenKey!: THREE.DirectionalLight;
+    greenLight = {
+        enabled: true,
+        intensity: 0.1,
+        /** Ambient (hemisphere) vs directional split — 0 = all directional, 1 = all ambient. */
+        ambientShare: 0.3,
+        color: PALETTE.green as string,
+        /** Where the directional comes from (only its direction matters, not its distance). */
+        dirX: 0.45,
+        dirY: 0.85,
+        dirZ: 8.3,
+    };
+    postFx!: PostFx;
+    postFxParams = structuredClone(DEFAULT_POSTFX_PARAMS);
     lastFlicker = 1;
 
     cameraMotion = { ...DEFAULT_CAMERA_MOTION };
+    cameraRig = createCameraRig(this.cameraMotion);
+    soundParams = { ...DEFAULT_SOUND_DESIGN };
+    sound = createSoundDesign(this.game.audio, this.soundParams);
     posterParams = { ...DEFAULT_POSTER_PARAMS };
     lightingParams = { ...DEFAULT_LIGHTING_PARAMS };
     wallLightParams = { ...DEFAULT_WALL_LIGHT_PARAMS };
@@ -91,6 +243,7 @@ export default class LastRave extends Scene {
     private readonly _keyColor = new THREE.Color();
     private readonly _roomColor = new THREE.Color();
     private readonly _glowColor = new THREE.Color();
+    private readonly _greenAmbient = new THREE.Color();
 
     constructor() {
         super();
@@ -102,6 +255,7 @@ export default class LastRave extends Scene {
         this.setHud();
         this.setObjects();
         this.setLights();
+        this.setPostFx();
         this.setTextures();
         this.setDebug();
         this.bindRhythm();
@@ -158,6 +312,11 @@ export default class LastRave extends Scene {
             this.poster.mesh,
         );
 
+        // Fine normal maps sparkle when the camera moves — widen sub-pixel highlights.
+        applySpecularAATo(this.wall);
+        applySpecularAATo(this.environment.group);
+        applySpecularAATo(this.screen.group);
+
         // Wall + steel receive the green glow; HUD glass stays on layer 0 only.
         this.wall.layers.enable(GLOW_LAYER);
         this.environment.group.traverse((obj) => obj.layers.enable(GLOW_LAYER));
@@ -166,9 +325,13 @@ export default class LastRave extends Scene {
 
     setLights() {
         // Green wash on concrete / steel — layer-masked so it never hits the HUD plane.
-        this.screenGlow = new THREE.PointLight(PALETTE.green, 0, 7, 1.4);
-        this.screenGlow.position.set(0, 0.05, 0.55);
-        this.screenGlow.layers.set(GLOW_LAYER);
+        this.flashlights = FLASHLIGHT_SEEDS.map((seed) => {
+            const light = new THREE.PointLight(PALETTE.green, 0, 7, seed.decay);
+            light.position.set(0, 0.05, this.flashlightParams.z);
+            light.layers.set(GLOW_LAYER);
+            return light;
+        });
+        this.screenGlow = this.flashlights[0];
 
         // Dim fill only while the poster is up / screen off.
         this.roomLight = new THREE.PointLight(
@@ -190,14 +353,41 @@ export default class LastRave extends Scene {
             this.lightingParams.ambient,
         );
 
+
+        this.debugFill = new THREE.HemisphereLight("#ffffff", "#808080", 0);
+        this.debugKey = new THREE.DirectionalLight("#ffffff", 0);
+        this.debugKey.position.set(0.5, 1, 5);
+
+        this.greenFill = new THREE.HemisphereLight(PALETTE.green, "#0a2414", 0);
+        this.greenKey = new THREE.DirectionalLight(PALETTE.green, 0);
+
         this.experience.camera.instance.layers.enable(GLOW_LAYER);
 
         this.container.add(
-            this.screenGlow,
+            ...this.flashlights,
             this.roomLight,
             this.topLight,
             this.ambientLight,
+            this.debugFill,
+            this.debugKey,
+            this.greenFill,
+            this.greenKey,
         );
+    }
+
+    setPostFx() {
+        const renderer = this.experience.renderer;
+        this.postFx = createPostFx(
+            renderer.instance,
+            this.experience.scene,
+            this.experience.camera.instance,
+            this.postFxParams,
+        );
+        this.postFx.setSize(this.experience.sizes.width, this.experience.sizes.height);
+        renderer.postProcess = this.postFxParams.enabled ? this.postFx : null;
+
+        this.hud.onTrigger = () => this.postFx.kick(0.35);
+        this.hud.onSfx = (cue) => this.sound.play(cue);
     }
 
     setTextures() {
@@ -243,6 +433,24 @@ export default class LastRave extends Scene {
                 this.maxAnisotropy,
             );
 
+            this.environment.setPanelTextures(
+                {
+                    albedo: resources.items.boxAlbedo as THREE.Texture,
+                    normal: resources.items.boxNormal as THREE.Texture,
+                    roughness: resources.items.boxRoughness as THREE.Texture,
+                },
+                this.maxAnisotropy,
+            );
+
+            this.environment.cables.setTextures(
+                {
+                    albedo: resources.items.cableAlbedo as THREE.Texture,
+                    normal: resources.items.cableNormal as THREE.Texture,
+                    roughness: resources.items.cableRoughness as THREE.Texture,
+                },
+                this.maxAnisotropy,
+            );
+
             const screenOverlay = resources.items
                 .screenOverlay as THREE.Texture;
             screenOverlay.colorSpace = THREE.SRGBColorSpace;
@@ -276,6 +484,8 @@ export default class LastRave extends Scene {
                     if (this.poster.gone || this.poster.flying) return;
                     this.poster.fly();
                     this.punch = { elapsed: 0 };
+                    this.postFx.kick(1);
+                    this.cameraRig.startle(1);
                     // Screen boots 200ms after the poster starts peeling off.
                     this.powerOnTimer = window.setTimeout(
                         () => this.powerOn(),
@@ -292,6 +502,10 @@ export default class LastRave extends Scene {
                 onSignalStage: (count) => {
                     if (count > 0 && !this.hud.isPowered) this.powerOn();
                     this.hud.setSignalStage(count);
+                    if (count > 0) {
+                        this.postFx.kick(count >= 4 ? 1 : 0.6);
+                        this.cameraRig.startle(count >= 4 ? 0.9 : 0.4);
+                    }
                     // Music starts on first signal object, not on the base "fête" screen.
                     if (count >= 1) this.game.startLoop();
                     if (count >= 4) this.game.playDrop();
@@ -307,6 +521,20 @@ export default class LastRave extends Scene {
             },
             this.posterNormal,
             this.screenRoughness,
+            this.flashlightParams,
+            this.debugLight,
+            this.greenLight,
+            this.environment.cables,
+            {
+                params: this.postFxParams,
+                onToggle: (enabled) => {
+                    this.experience.renderer.postProcess = enabled ? this.postFx : null;
+                },
+                testKick: () => this.postFx.kick(1),
+                testGlitch: (wild) => this.postFx.glitch(wild),
+                specularAA,
+                sound: this.soundParams,
+            },
         );
     }
 
@@ -328,6 +556,8 @@ export default class LastRave extends Scene {
 
     powerOn() {
         this.screenPowerTarget = 1;
+        this.postFx.kick(0.8);
+        this.cameraRig.startle(0.6);
         this.hud.setPowered(true);
         if (!this.hud.showsGlobe) return;
         this.globe.setPowered(true);
@@ -381,14 +611,45 @@ export default class LastRave extends Scene {
         this.globe.update(time, dt);
         this.poster.update(time, dt);
 
+        this.updateFlashlights(time);
         this.updateScreenPower(dt);
+        // Post glitch rides the HUD tear while the traces fuse (drop).
+        this.postFx.setGlitchLevel(this.hud.mergeGlitch);
         this.environment.update(time, dt, {
             screenPower: this.screenPower,
             flicker: this.lastFlicker,
             signalStage: this.hud.signalsFound,
         });
         this.updatePunch(dt);
-        this.updateCamera();
+        this.updateCamera(time, dt);
+    }
+
+    /** Each torch replays its fixed loop (same path every `period`), plus a nervous hand. */
+    updateFlashlights(time: number) {
+        const { moving, period, spread, z, tremor } = this.flashlightParams;
+        const halfW = SCREEN_WIDTH / 2;
+        const halfH = SCREEN_HEIGHT / 2;
+        const u = moving ? (time / Math.max(0.5, period)) % 1 : 0;
+        const shake = moving ? tremor : 0;
+
+        this.flashlights.forEach((light, i) => {
+            const { path, size, phase } = FLASHLIGHT_SEEDS[i];
+            const [px, py] = path(u);
+            // Scared hand: small search wobble around the aim + fast jitter.
+            const shakeX =
+                Math.sin(time * 1.9 + phase) * 0.9 +
+                Math.sin(time * 7.3 + i * 3.1) * 0.6 +
+                Math.sin(time * 17.7 + i) * 0.3;
+            const shakeY =
+                Math.cos(time * 1.6 + phase * 1.3) * 0.7 +
+                Math.sin(time * 8.9 + i * 1.3) * 0.6 +
+                Math.sin(time * 15.1 + i * 2) * 0.3;
+            light.position.set(
+                px * spread * halfW + shakeX * shake,
+                py * spread * halfH + shakeY * shake,
+                z * size,
+            );
+        });
     }
 
     updateScreenPower(dt: number) {
@@ -404,7 +665,18 @@ export default class LastRave extends Scene {
         const fill = 1 - this.screenPower;
         this.ambientLight.intensity = ambient * (0.35 + 0.65 * fill);
         this.topLight.intensity = key * fill;
-        this.screenGlow.intensity = screenGlow * this.screenPower * flicker;
+        const { share, variation } = this.flashlightParams;
+        const torch = screenGlow * share * this.screenPower * flicker;
+        const t = (this.experience.time.elapsed / 1000) * 0.45;
+        this.flashlights.forEach((light, i) => {
+            const { power, phase } = FLASHLIGHT_SEEDS[i];
+            // Slow uneven breathing in [-1, 1] — batteries / hand angle, never periodic-looking.
+            const drift =
+                0.55 * Math.sin(t * 0.37 + phase * 3.1) +
+                0.3 * Math.sin(t * 0.91 + phase * 1.3) +
+                0.15 * Math.sin(t * 2.3 + phase * 5.7);
+            light.intensity = torch * power * Math.max(0, 1 + drift * variation);
+        });
         this.roomLight.intensity = room * fill;
         this.syncCustomLights();
     }
@@ -419,6 +691,25 @@ export default class LastRave extends Scene {
         this._ambientColor
             .copy(this.ambientLight.color)
             .multiplyScalar(this.ambientLight.intensity * 0.85);
+
+        const debug = this.debugLight.enabled ? this.debugLight.intensity : 0;
+        this.debugFill.intensity = debug;
+        this.debugKey.intensity = debug;
+        // Off = out of the light list entirely (an intensity-0 light still costs per pixel).
+        this.debugFill.visible = debug > 0;
+        this.debugKey.visible = debug > 0;
+        const { enabled, intensity, ambientShare, color, dirX, dirY, dirZ } = this.greenLight;
+        const green = enabled ? intensity : 0;
+        this.greenFill.color.set(color);
+        this.greenKey.color.set(color);
+        // ×2 so 0.5 keeps both halves at `intensity`, like before the split.
+        this.greenFill.intensity = green * ambientShare * 2;
+        this.greenKey.intensity = green * (1 - ambientShare) * 2;
+        this.greenKey.position.set(dirX, dirY, dirZ);
+        // Poster is a custom shader — fold the debug flood + green base into its ambient.
+        this._ambientColor.addScalar(debug * 0.6);
+        this._greenAmbient.copy(this.greenFill.color).multiplyScalar(this.greenFill.intensity * 0.6);
+        this._ambientColor.add(this._greenAmbient);
 
         this._keyColor
             .copy(this.topLight.color)
@@ -513,14 +804,18 @@ export default class LastRave extends Scene {
         this.punchRoll = peakRoll * base + shakeR * 0.004 * turbulence;
     }
 
-    updateCamera() {
+    /** Base framing + explorer rig (drift / breath / stress / handheld) + poster punch. */
+    updateCamera(time: number, dt: number) {
         const camera = this.experience.camera.instance;
+        // The drop's tear glitch keeps the watcher on edge.
+        this.cameraRig.startle(this.hud.mergeGlitch * 0.8);
+        const o = this.cameraRig.update(time, dt);
         camera.position.set(
-            this.punchX,
-            this.punchY,
-            SCREEN_Z + SCREEN_SURFACE_Z + this.cameraDistance + this.punchZ,
+            this.punchX + o.x,
+            this.punchY + o.y,
+            SCREEN_Z + SCREEN_SURFACE_Z + this.cameraDistance + this.punchZ + o.z,
         );
-        camera.lookAt(this.punchX, this.punchY, SCREEN_Z);
-        camera.rotateZ(this.punchRoll);
+        camera.lookAt(this.punchX + o.lookX, this.punchY + o.lookY, SCREEN_Z);
+        camera.rotateZ(this.punchRoll + o.roll);
     }
 }

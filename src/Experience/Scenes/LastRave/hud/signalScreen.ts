@@ -490,11 +490,16 @@ export class SignalScreen {
     return Math.max(rave, hit)
   }
 
-  /** Horizontal tear glitch — rave lock or signal acquire. */
-  glitchLevel(now = this.now) {
+  /** Tear glitch of the merge only (traces fusing into one) — 0 otherwise. */
+  raveGlitchLevel(now = this.now) {
     const t = this.raveTime(now)
     const u = (t - (FLASH_AT - 0.02)) / (RAVE.lock + 0.05 - (FLASH_AT - 0.02))
-    const rave = u > 0 && u < 1 ? Math.sin(Math.PI * u) ** 0.6 : 0
+    return u > 0 && u < 1 ? Math.sin(Math.PI * u) ** 0.6 : 0
+  }
+
+  /** Horizontal tear glitch — rave lock or signal acquire. */
+  glitchLevel(now = this.now) {
+    const rave = this.raveGlitchLevel(now)
     const a = this.acquireTime(now)
     const v = (a - 0.12) / 0.55
     const hit = v > 0 && v < 1 ? Math.sin(Math.PI * v) ** 0.7 * 0.85 : 0

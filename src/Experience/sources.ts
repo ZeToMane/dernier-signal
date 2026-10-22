@@ -8,7 +8,7 @@ export default [
     {
         name: "posterTexture",
         type: "texture",
-        path: "/textures/ripped-papper.webp",
+        path: "/textures/texture-ripped-paper.png",
     },
     {
         name: "posterNormal",
@@ -34,6 +34,36 @@ export default [
         name: "concreteNormal",
         type: "texture",
         path: "/textures/concrete_normal.webp",
+    },
+    {
+        name: "boxAlbedo",
+        type: "texture",
+        path: "/textures/texture-boitier.webp",
+    },
+    {
+        name: "boxNormal",
+        type: "texture",
+        path: "/textures/normal-box.png",
+    },
+    {
+        name: "boxRoughness",
+        type: "texture",
+        path: "/textures/roughmap-box.webp",
+    },
+    {
+        name: "cableAlbedo",
+        type: "texture",
+        path: "/textures/texture-cable.webp",
+    },
+    {
+        name: "cableNormal",
+        type: "texture",
+        path: "/textures/normal-cable4.webp",
+    },
+    {
+        name: "cableRoughness",
+        type: "texture",
+        path: "/textures/cable-rough.webp",
     },
     {
         name: "steelAlbedo",

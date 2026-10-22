@@ -3,6 +3,8 @@ export default class AudioEngine {
     private buffers: Map<string, AudioBuffer>;
     private bgmSource: AudioBufferSourceNode | null = null;
     private bgmGain: GainNode;
+    /** Bus for UI / sound-design one-shots (own volume, separate from music). */
+    private sfxGain: GainNode;
 
     constructor() {
         // Create the AudioContext (starts suspended in most modern browsers)
@@ -12,6 +14,41 @@ export default class AudioEngine {
         // Setup a main gain node for background music to allow volume control
         this.bgmGain = this.audioCtx.createGain();
         this.bgmGain.connect(this.audioCtx.destination);
+
+        this.sfxGain = this.audioCtx.createGain();
+        this.sfxGain.connect(this.audioCtx.destination);
+    }
+
+    /** True once the browser let the context run (after a user gesture). */
+    public get isRunning(): boolean {
+        return this.audioCtx.state === "running";
+    }
+
+    public setSfxVolume(volume: number): void {
+        this.sfxGain.gain.value = volume;
+    }
+
+    /**
+     * Fire-and-forget one-shot on the SFX bus, with per-call volume, playback
+     * rate (pitch) and stereo pan (-1 left … 1 right).
+     */
+    public playSfx(
+        id: string,
+        { volume = 1, rate = 1, pan = 0 }: { volume?: number; rate?: number; pan?: number } = {},
+    ): void {
+        const buffer = this.buffers.get(id);
+        if (!buffer || !this.isRunning) return;
+
+        const source = this.audioCtx.createBufferSource();
+        source.buffer = buffer;
+        source.playbackRate.value = rate;
+        const gain = this.audioCtx.createGain();
+        gain.gain.value = volume;
+        const panner = this.audioCtx.createStereoPanner();
+        panner.pan.value = Math.max(-1, Math.min(1, pan));
+        source.connect(gain).connect(panner).connect(this.sfxGain);
+        source.onended = () => source.disconnect();
+        source.start();
     }
 
     /**

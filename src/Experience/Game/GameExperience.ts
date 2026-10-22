@@ -105,6 +105,14 @@ export class GameExperience {
             arpege: "/assets/sounds/ARPEGE.mp3",
             drum: "/assets/sounds/DRUM.mp3",
             pad: "/assets/sounds/PAD.mp3",
+            // Sound design one-shots (HUD appearances, glitches…).
+            beep: "/assets/sounds/beep.mp3",
+            blip: "/assets/sounds/blip.mp3",
+            blipBurst: "/assets/sounds/blipblipblipblip.mp3",
+            click: "/assets/sounds/click.mp3",
+            click2: "/assets/sounds/click2.mp3",
+            tic: "/assets/sounds/tic.mp3",
+            ticBurst: "/assets/sounds/tictictictic.mp3",
         });
 
         const res = await fetch("/assets/charts/chart.json");

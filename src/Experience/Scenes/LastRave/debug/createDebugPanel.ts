@@ -5,6 +5,68 @@ import { HUD_MODULES } from '../hud/modules'
 import type { CameraMotionParams } from '../objects/cameraMotion'
 import type { PosterParams } from '../objects/createPoster'
 import type { WallLightParams } from '../objects/createWall'
+import type { FlashlightParams } from '../LastRave'
+import type { CableSpec } from '../objects/environment/createEnvironment'
+import type { PostFxParams } from '../postfx/createPostFx'
+import type { SoundDesignParams } from '../audio/soundDesign'
+
+type PostFxDebug = {
+  params: PostFxParams
+  onToggle: (enabled: boolean) => void
+  testKick: () => void
+  testGlitch: (wild: boolean) => void
+  specularAA: { value: number }
+  sound: SoundDesignParams
+}
+
+function bindSound(pane: Pane, sound: SoundDesignParams) {
+  const folder = pane.addFolder({ title: 'Sound design', expanded: true })
+  folder.addBinding(sound, 'enabled', { label: 'Activé' })
+  folder.addBinding(sound, 'volume', { min: 0, max: 2, step: 0.01, label: 'Volume SFX' })
+  folder.addBinding(sound, 'pitchSpread', { min: 0, max: 2, step: 0.01, label: 'Variation pitch' })
+  folder.addBinding(sound, 'stereo', { min: 0, max: 1, step: 0.01, label: 'Stéréo' })
+}
+
+function bindPostFx(pane: Pane, fx: PostFxDebug) {
+  const { params } = fx
+  const root = pane.addFolder({ title: 'Post-process', expanded: true })
+  root.addBinding(params, 'enabled', { label: 'Activé' }).on('change', (ev) => fx.onToggle(ev.value))
+  root.addBinding(params, 'resolution', { min: 0.5, max: 2, step: 0.25, label: 'Résolution max' })
+  root.addBinding(params, 'smaa', { label: 'Antialiasing SMAA' })
+  root.addBinding(params, 'msaa', { label: 'MSAA (bug Mac)' })
+  root.addBinding(params, 'exposure', { min: 0.2, max: 3, step: 0.01, label: 'Exposition' })
+  root.addBinding(fx.specularAA, 'value', { min: 0, max: 4, step: 0.05, label: 'Anti-scintillement' })
+
+  const bloom = root.addFolder({ title: 'Bloom', expanded: false })
+  bloom.addBinding(params.bloom, 'enabled', { label: 'Activé' })
+  bloom.addBinding(params.bloom, 'intensity', { min: 0, max: 5, step: 0.01, label: 'Intensité' })
+  bloom.addBinding(params.bloom, 'threshold', { min: 0, max: 1.5, step: 0.01, label: 'Seuil' })
+  bloom.addBinding(params.bloom, 'smoothing', { min: 0, max: 1, step: 0.01, label: 'Douceur seuil' })
+  bloom.addBinding(params.bloom, 'radius', { min: 0, max: 1, step: 0.01, label: 'Rayon' })
+
+  const vignette = root.addFolder({ title: 'Vignette', expanded: false })
+  vignette.addBinding(params.vignette, 'enabled', { label: 'Activé' })
+  vignette.addBinding(params.vignette, 'offset', { min: 0, max: 1, step: 0.01, label: 'Taille' })
+  vignette.addBinding(params.vignette, 'darkness', { min: 0, max: 1.5, step: 0.01, label: 'Noirceur' })
+
+  const chroma = root.addFolder({ title: 'Aberration chromatique', expanded: false })
+  chroma.addBinding(params.chroma, 'enabled', { label: 'Activé' })
+  chroma.addBinding(params.chroma, 'base', { min: 0, max: 0.005, step: 0.0001, label: 'Au repos' })
+  chroma.addBinding(params.chroma, 'peak', { min: 0, max: 0.04, step: 0.0005, label: 'Pic événement' })
+  chroma.addBinding(params.chroma, 'decay', { min: 0.5, max: 10, step: 0.1, label: 'Retombée' })
+  chroma.addButton({ title: 'Tester un pic' }).on('click', fx.testKick)
+
+  const edge = root.addFolder({ title: 'Flou des bords', expanded: false })
+  edge.addBinding(params.edgeBlur, 'enabled', { label: 'Activé' })
+  edge.addBinding(params.edgeBlur, 'start', { min: 0, max: 1, step: 0.01, label: 'Début' })
+  edge.addBinding(params.edgeBlur, 'strength', { min: 0, max: 20, step: 0.1, label: 'Force (px)' })
+
+  const glitch = root.addFolder({ title: 'Glitch', expanded: false })
+  glitch.addBinding(params.glitch, 'enabled', { label: 'Activé' })
+  glitch.addBinding(params.glitch, 'duration', { min: 0.05, max: 1.5, step: 0.01, label: 'Durée test (s)' })
+  glitch.addButton({ title: 'Tester (léger)' }).on('click', () => fx.testGlitch(false))
+  glitch.addButton({ title: 'Tester (fort)' }).on('click', () => fx.testGlitch(true))
+}
 
 export type LightingParams = {
   ambient: number
@@ -35,16 +97,26 @@ function bindFluidParams(folder: ReturnType<Pane['addFolder']>, params: MeterFlu
 
 function bindCameraMotion(pane: Pane, motion: CameraMotionParams) {
   const camera = pane.addFolder({ title: 'Camera', expanded: true })
+  camera.addBinding(motion, 'enabled', { label: 'Activée' })
+  camera.addBinding(motion, 'amount', { min: 0, max: 2, step: 0.01, label: 'Quantité' })
 
-  const move = camera.addFolder({ title: 'Mouvement XY', expanded: true })
-  move.addBinding(motion, 'swayX', { min: 0, max: 0.2, step: 0.001, label: 'Sway X' })
-  move.addBinding(motion, 'swayY', { min: 0, max: 0.2, step: 0.001, label: 'Sway Y' })
+  const explore = camera.addFolder({ title: 'Exploration', expanded: true })
+  explore.addBinding(motion, 'speed', { min: 0, max: 3, step: 0.01, label: 'Vitesse' })
+  explore.addBinding(motion, 'swayX', { min: 0, max: 0.3, step: 0.001, label: 'Latéral (X)' })
+  explore.addBinding(motion, 'swayY', { min: 0, max: 0.3, step: 0.001, label: 'Vertical (Y)' })
+  explore.addBinding(motion, 'dolly', { min: 0, max: 1, step: 0.005, label: 'Avancée (Z)' })
+  explore.addBinding(motion, 'lookAhead', { min: 0, max: 2, step: 0.01, label: 'Anticipation' })
 
-  const tilt = camera.addFolder({ title: 'Tangage', expanded: true })
-  tilt.addBinding(motion, 'roll', { min: 0, max: 0.05, step: 0.001, label: 'Roll' })
-  tilt.addBinding(motion, 'pitch', { min: 0, max: 0.05, step: 0.001, label: 'Pitch' })
-  tilt.addBinding(motion, 'tiltLerp', { min: 0.5, max: 8, step: 0.1, label: 'Lerp' })
-  tilt.addBinding(motion, 'stressTilt', { min: 0, max: 0.03, step: 0.001, label: 'Stress tilt' })
+  const body = camera.addFolder({ title: 'Respiration / stress', expanded: true })
+  body.addBinding(motion, 'breath', { min: 0, max: 0.03, step: 0.0005, label: 'Respiration' })
+  body.addBinding(motion, 'stress', { min: 0, max: 1, step: 0.01, label: 'Stress' })
+  body.addBinding(motion, 'shake', { min: 0, max: 0.02, step: 0.0005, label: 'Tremblement' })
+  body.addBinding(motion, 'stressTilt', { min: 0, max: 0.02, step: 0.0005, label: 'Tension (roll)' })
+
+  const tilt = camera.addFolder({ title: 'Cadrage', expanded: true })
+  tilt.addBinding(motion, 'roll', { min: 0, max: 0.05, step: 0.001, label: 'Roulis' })
+  tilt.addBinding(motion, 'pitch', { min: 0, max: 0.05, step: 0.001, label: 'Tangage' })
+  tilt.addBinding(motion, 'tiltLerp', { min: 0.5, max: 8, step: 0.1, label: 'Lissage' })
 }
 
 function bindPosterParams(folder: ReturnType<Pane['addFolder']>, params: PosterParams) {
@@ -72,6 +144,38 @@ function bindPosterParams(folder: ReturnType<Pane['addFolder']>, params: PosterP
   fly.addBinding(params, 'drift', { min: 0, max: 5, step: 0.05, label: 'Droite' })
   fly.addBinding(params, 'fall', { min: 0, max: 3, step: 0.05, label: 'Bas' })
   fly.addBinding(params, 'out', { min: 0, max: 2, step: 0.05, label: 'Avant (Z)' })
+}
+
+function bindCables(
+  pane: Pane,
+  cables: { specs: CableSpec[]; rebuild: (index: number) => void },
+) {
+  const folder = pane.addFolder({ title: 'Câbles', expanded: true })
+  folder.addButton({ title: 'Copier la config (console + presse-papier)' }).on('click', () => {
+    const round = (v: number) => Math.round(v * 1000) / 1000
+    const json = JSON.stringify(
+      cables.specs.map((c) => ({
+        radius: round(c.radius),
+        points: c.points.map((p) => [round(p.x), round(p.y), round(p.z)]),
+      })),
+    )
+    console.log(json)
+    navigator.clipboard?.writeText(json).catch(() => {})
+  })
+
+  cables.specs.forEach((spec, i) => {
+    const cable = folder.addFolder({ title: `Câble ${i + 1}`, expanded: false })
+    const rebuild = () => cables.rebuild(i)
+    cable
+      .addBinding(spec, 'radius', { min: 0.005, max: 0.15, step: 0.001, label: 'Épaisseur' })
+      .on('change', rebuild)
+    spec.points.forEach((point, j) => {
+      const pt = cable.addFolder({ title: `Point ${j + 1}`, expanded: false })
+      pt.addBinding(point, 'x', { min: -4, max: 4, step: 0.01, label: 'X' }).on('change', rebuild)
+      pt.addBinding(point, 'y', { min: -3, max: 3, step: 0.01, label: 'Y' }).on('change', rebuild)
+      pt.addBinding(point, 'z', { min: 0.15, max: 2, step: 0.005, label: 'Z' }).on('change', rebuild)
+    })
+  })
 }
 
 function bindLightingParams(pane: Pane, lighting: LightingParams) {
@@ -124,16 +228,25 @@ export function createDebugPanel(
   },
   posterNormal: { enabled: boolean },
   screenRoughness: { enabled: boolean },
+  flashlights: FlashlightParams,
+  debugLight: { enabled: boolean; intensity: number },
+  greenLight: {
+    enabled: boolean
+    intensity: number
+    ambientShare: number
+    color: string
+    dirX: number
+    dirY: number
+    dirZ: number
+  },
+  cables: { specs: CableSpec[]; rebuild: (index: number) => void },
+  postFx: PostFxDebug,
 ) {
   const pane = new Pane({ title: 'The Last Rave', expanded: true })
 
-  bindLightingParams(pane, lighting)
-  bindWallLightParams(pane, wallLight, actions.onWallLightChange)
-
-  const screenFx = pane.addFolder({ title: 'Écran HUD', expanded: true })
-  screenFx
-    .addBinding(screenRoughness, 'enabled', { label: 'Roughness map' })
-    .on('change', (ev) => actions.onScreenRoughnessToggle(ev.value))
+  const fisheye = pane.addFolder({ title: 'Fisheye', expanded: true })
+  fisheye.addBinding(postFx.params.fisheye, 'enabled', { label: 'Activé' })
+  fisheye.addBinding(postFx.params.fisheye, 'strength', { min: 0, max: 1.5, step: 0.01, label: 'Force' })
 
   const signal = pane.addFolder({ title: 'Écran 2 — Signal', expanded: true })
   for (const count of [1, 2, 3]) {
@@ -151,6 +264,39 @@ export function createDebugPanel(
     .addBinding(posterNormal, 'enabled', { label: 'Normal map' })
     .on('change', (ev) => actions.onPosterNormalToggle(ev.value))
   bindPosterParams(poster, posterParams)
+
+  bindPostFx(pane, postFx)
+  bindSound(pane, postFx.sound)
+  bindLightingParams(pane, lighting)
+
+  const flood = pane.addFolder({ title: 'Lumière debug', expanded: true })
+  flood.addBinding(debugLight, 'enabled', { label: 'Tout éclairer' })
+  flood.addBinding(debugLight, 'intensity', { min: 0, max: 10, step: 0.1, label: 'Intensité' })
+
+  const green = pane.addFolder({ title: 'Lumière verte', expanded: true })
+  green.addBinding(greenLight, 'enabled', { label: 'Activée' })
+  green.addBinding(greenLight, 'intensity', { min: 0, max: 3, step: 0.01, label: 'Intensité' })
+  green.addBinding(greenLight, 'ambientShare', { min: 0, max: 1, step: 0.01, label: 'Part ambiance' })
+  green.addBinding(greenLight, 'color', { label: 'Couleur' })
+  green.addBinding(greenLight, 'dirX', { min: -5, max: 5, step: 0.01, label: 'Direction X' })
+  green.addBinding(greenLight, 'dirY', { min: -5, max: 5, step: 0.01, label: 'Direction Y' })
+  green.addBinding(greenLight, 'dirZ', { min: 0.1, max: 10, step: 0.01, label: 'Direction Z' })
+
+  const torches = pane.addFolder({ title: 'Lampes torches', expanded: true })
+  torches.addBinding(flashlights, 'moving', { label: 'Mouvement' })
+  torches.addBinding(flashlights, 'period', { min: 6, max: 60, step: 0.5, label: 'Boucle (s)' })
+  torches.addBinding(flashlights, 'spread', { min: 1, max: 1.5, step: 0.01, label: 'Écart du bord' })
+  torches.addBinding(flashlights, 'z', { min: 0.1, max: 3, step: 0.01, label: 'Distance' })
+  torches.addBinding(flashlights, 'tremor', { min: 0, max: 0.15, step: 0.001, label: 'Tremblement' })
+  torches.addBinding(flashlights, 'share', { min: 0, max: 1.5, step: 0.01, label: 'Part du glow' })
+  torches.addBinding(flashlights, 'variation', { min: 0, max: 1, step: 0.01, label: 'Variation' })
+  bindWallLightParams(pane, wallLight, actions.onWallLightChange)
+  bindCables(pane, cables)
+
+  const screenFx = pane.addFolder({ title: 'Écran HUD', expanded: true })
+  screenFx
+    .addBinding(screenRoughness, 'enabled', { label: 'Roughness map' })
+    .on('change', (ev) => actions.onScreenRoughnessToggle(ev.value))
 
   const modules = pane.addFolder({ title: 'Modules HUD', expanded: true })
 

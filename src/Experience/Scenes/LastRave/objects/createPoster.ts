@@ -53,7 +53,7 @@ export type PosterParams = {
 export const DEFAULT_POSTER_PARAMS: PosterParams = {
   height: 1.4,
   x: 0.1,
-  y: 0,
+  y: -0.2,
   z: 0.121,
   rotX: 0,
   rotY: 0,
@@ -143,7 +143,8 @@ const fragmentShader = /* glsl */ `
     vec3 dp1perp = cross(N, dp1);
     vec3 T = dp2perp * duv1.x + dp1perp * duv2.x;
     vec3 B = dp2perp * duv1.y + dp1perp * duv2.y;
-    float invmax = inversesqrt(max(dot(T, T), dot(B, B)));
+    // Guard: degenerate derivatives (grazing / sub-pixel) would give inf → NaN.
+    float invmax = inversesqrt(max(max(dot(T, T), dot(B, B)), 1e-12));
     return normalize(mat3(T * invmax, B * invmax, N) * mapN);
   }
 
@@ -157,7 +158,9 @@ const fragmentShader = /* glsl */ `
   }
 
   void main() {
-    vec3 geoN = normalize(cross(dFdx(vViewPos), dFdy(vViewPos)));
+    vec3 cr = cross(dFdx(vViewPos), dFdy(vViewPos));
+    float crLen = length(cr);
+    vec3 geoN = crLen > 1e-10 ? cr / crLen : vec3(0.0, 0.0, 1.0);
     vec3 n = geoN;
     if (uHasNormal > 0.5) {
       vec3 mapN = texture2D(uNormalMap, vUv).xyz * 2.0 - 1.0;

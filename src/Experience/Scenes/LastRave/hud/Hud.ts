@@ -14,13 +14,33 @@ import {
 
 export type HudScreen = 'intro' | 'signal' | 'outro' | 'end'
 
+/** Sound-design cues fired by the HUD; `x` = design-space x (0..DESIGN.width) for panning. */
+export type HudSfx =
+  | { type: 'power-on' }
+  | { type: 'panel-in' | 'panel-out'; x: number }
+  | { type: 'type-start' }
+  | { type: 'module'; x: number }
+  | { type: 'signal'; count: number }
+  | { type: 'network' }
+  | { type: 'lock' }
+  | { type: 'outro-in' }
+  | { type: 'outro-type' }
+  | { type: 'outro-glitch' }
+  | { type: 'text-glitch' }
+
 /** Signal screen stays on the merged trace this long after « RÉSEAU RÉACTIVÉ ». */
 const OUTRO_HOLD = 4
-const OUTRO_LINES = ['LA FÊTE', "N'EST PAS MORTE"]
+const OUTRO_LINES = ["LA FÊTE N'EST PAS", 'MORTE.']
+const OUTRO_LABEL = '> SIGNAL RÉTABLI'
+/** Outro card layout (design px): dark panel behind the title + label strip above. */
+const OUTRO_PANEL = { x: 57, y: 163, w: 713, h: 142 }
+const OUTRO_LABEL_BOX = { x: 86, y: 123, w: 92, h: 21 }
+/** Glitch artifacts on the outro card: solid bars + displaced slices, a few frames each. */
+type OutroGlitch = { x: number; y: number; w: number; h: number; dx: number; slice: boolean; until: number }
 /** Pause before the first glyph, type speed (chars/s), hold once fully written. */
 const OUTRO_TYPE_DELAY = 0.2
 const OUTRO_TYPE_RATE = 20
-const OUTRO_TEXT_HOLD = 1
+const OUTRO_TEXT_HOLD = 2.5
 /** Arrival glitch length / exit glitch length (s). */
 const OUTRO_GLITCH_IN = 0.6
 const OUTRO_GLITCH_OUT = 0.18
@@ -52,6 +72,10 @@ type LayoutBootState = {
   axis: 'h' | 'v'
   /** Reverse playback — the panel deconstructs and stays hidden once done. */
   out?: boolean
+  /** Panel center x (design px) — sound panning. */
+  cx: number
+  /** Sound cue already fired for this boot. */
+  announced?: boolean
 }
 
 type LayoutPose = Rect & {
@@ -85,6 +109,8 @@ type TypewriteState = {
   startAt: number
   /** Characters unlocked per second. */
   rate: number
+  /** Sound cue already fired when typing started. */
+  announced?: boolean
 }
 
 export async function loadHudFonts() {
@@ -182,6 +208,9 @@ export class Hud {
   private pendingSwitch: { screen: HudScreen; count: number; at: number } | null = null
   /** Big centered title after the signal screen tears down — then black. */
   private outro: { startAt: number; endAt: number } | null = null
+  private outroGlitches: OutroGlitch[] = []
+  /** Next sporadic burst during the outro hold. */
+  private outroBurstAt = 0
   private readonly painter: HudPainter
 
   /** Params per fluid panel, for Tweakpane. */
@@ -227,6 +256,11 @@ export class Hud {
   /** Globe only lives on the settled intro screen (hidden while panels swap). */
   get showsGlobe() {
     return this.powered && this.screen === 'intro' && !this.pendingSwitch
+  }
+
+  /** 0..1 while the signal traces fuse (drop) — drives the post glitch. */
+  get mergeGlitch() {
+    return this.signalScreen.raveGlitchLevel(this.meterTime)
   }
 
   get signalsFound() {
@@ -301,6 +335,8 @@ export class Hud {
     const prev = this.signalScreen.count
     this.signalScreen.setFound(count, this.meterTime, firstDelay)
     // Each newly found object fires a global overdrive pulse.
+    if (count > prev && count <= 3) this.onSfx?.({ type: 'signal', count })
+    else if (count > prev) this.onSfx?.({ type: 'network' })
     if (count > prev && count <= 3) {
       this.trigger('s2-small-a')
       this.trigger('s2-small-b')
@@ -322,6 +358,8 @@ export class Hud {
       this.layoutBoot.clear()
       const chars = OUTRO_LINES.join('').length
       const startAt = this.meterTime
+      this.outroTypedCount = 0
+      this.onSfx?.({ type: 'outro-in' })
       this.outro = {
         startAt,
         endAt: startAt + OUTRO_TYPE_DELAY + chars / OUTRO_TYPE_RATE + OUTRO_TEXT_HOLD,
@@ -361,6 +399,7 @@ export class Hud {
     if (on === this.powered) return
     this.powered = on
     if (on) {
+      this.onSfx?.({ type: 'power-on' })
       this.armLayoutBoot()
       this.triggerTexts()
     } else {
@@ -375,7 +414,19 @@ export class Hud {
     this.draw()
   }
 
+  /** Fired on every module / layout glitch — post FX hooks its spikes here. */
+  onTrigger: (() => void) | null = null
+  /** Sound-design cues (appearances, typing, signals, outro). */
+  onSfx: ((cue: HudSfx) => void) | null = null
+  private wasLocked = false
+  private outroTypedCount = 0
+
   trigger(id: ModuleId) {
+    this.onTrigger?.()
+    const mod =
+      HUD_MODULES.find((module) => module.id === id) ??
+      SIGNAL_MODULES.find((module) => module.id === id)
+    this.onSfx?.({ type: 'module', x: mod ? mod.x + mod.w / 2 : DESIGN.width / 2 })
     const kind =
       HUD_MODULES.find((module) => module.id === id)?.kind ??
       SIGNAL_MODULES.find((module) => module.id === id)?.kind
@@ -401,6 +452,7 @@ export class Hud {
 
   /** Rebuild the green grid — rectangles materialize with a hacker boot glitch. */
   triggerLayout() {
+    this.onTrigger?.()
     if (!this.powered) {
       this.setPowered(true)
       return
@@ -435,6 +487,16 @@ export class Hud {
     }
 
     if (this.pendingSwitch && this.meterTime >= this.pendingSwitch.at) this.finishScreenSwitch()
+
+    // Panel appear / vanish cues, fired as each one actually starts.
+    for (const boot of this.layoutBoot.values()) {
+      if (boot.announced || this.meterTime < boot.startAt) continue
+      boot.announced = true
+      this.onSfx?.({ type: boot.out ? 'panel-out' : 'panel-in', x: boot.cx })
+    }
+    const locked = this.screen === 'signal' && this.signalScreen.lockedFor(this.meterTime) >= 0
+    if (locked && !this.wasLocked) this.onSfx?.({ type: 'lock' })
+    this.wasLocked = locked
 
     if (
       this.screen === 'signal' &&
@@ -490,6 +552,10 @@ export class Hud {
     }
 
     if (this.meterTime < state.startAt) return ''
+    if (!state.announced) {
+      state.announced = true
+      this.onSfx?.({ type: 'type-start' })
+    }
 
     const elapsed = this.meterTime - state.startAt
     const unlocked = Math.min(value.length, Math.floor(elapsed * state.rate))
@@ -532,6 +598,7 @@ export class Hud {
 
     if (this.meterTime >= state.nextAt) {
       state.display = this.dropOneLetter(value)
+      this.onSfx?.({ type: 'text-glitch' })
       state.until = this.meterTime + 0.1 + Math.random() * 0.12
       state.nextAt = state.until + 6 + Math.random() * 14
     }
@@ -634,6 +701,7 @@ export class Hud {
         oy: (Math.random() - 0.5) * 28,
         axis: this.pickOpenAxis(piece),
         out: true,
+        cx: piece.x + piece.w / 2,
       })
       end = Math.max(end, delay + duration)
       delay += 0.02 + Math.random() * 0.035
@@ -662,6 +730,7 @@ export class Hud {
         ox: (Math.random() - 0.5) * 36,
         oy: (Math.random() - 0.5) * 28,
         axis: this.pickOpenAxis(piece),
+        cx: piece.x + piece.w / 2,
       })
       delay += 0.035 + Math.random() * 0.055
     }
@@ -1293,7 +1362,10 @@ export class Hud {
     ctx.stroke()
   }
 
-  /** Big centered « LA FÊTE N'EST PAS MORTE » — glitch arrival, type-in, short hold. */
+  /**
+   * Outro card « LA FÊTE N'EST PAS MORTE. » — label strip, dark title panel,
+   * thin rules and drifting data blocks. Glitch arrival, type-in, hold.
+   */
   private drawOutro() {
     const outro = this.outro
     if (!outro) return
@@ -1305,16 +1377,67 @@ export class Hud {
     // Rare twitch during the hold so it never feels frozen.
     const twitch = Math.random() < 0.04 ? 0.35 : 0
     const glitch = Math.max(glitchIn, glitchOut, twitch)
-
-    let unlocked = Math.max(0, Math.floor((t - OUTRO_TYPE_DELAY) * OUTRO_TYPE_RATE))
-    const size = 50
-    const lineGap = 60
-    const cx = DESIGN.width / 2
-    const top = DESIGN.height / 2 - ((OUTRO_LINES.length - 1) * lineGap) / 2
+    // Chrome (panel, rules, label) snaps in over the first frames.
+    const chrome = Math.min(1, t / 0.25)
 
     ctx.save()
-    ctx.font = `900 ${size}px ${TITLE_FONT}`
-    ctx.letterSpacing = '3px'
+    ctx.globalAlpha = chrome
+
+    // Dark panel behind the title.
+    const panel = OUTRO_PANEL
+    ctx.fillStyle = 'rgba(34, 240, 143, 0.035)'
+    ctx.beginPath()
+    ctx.roundRect(panel.x, panel.y, panel.w, panel.h, 8)
+    ctx.fill()
+
+    // Label box + rule running right of it, broken by a short gap.
+    const box = OUTRO_LABEL_BOX
+    const ruleY = box.y + box.h
+    ctx.strokeStyle = PALETTE.greenDim
+    ctx.lineWidth = 1
+    ctx.strokeRect(box.x + 0.5, box.y + 0.5, box.w, box.h)
+    ctx.beginPath()
+    ctx.moveTo(box.x + box.w, ruleY + 0.5)
+    ctx.lineTo(352, ruleY + 0.5)
+    ctx.moveTo(369, ruleY + 0.5)
+    ctx.lineTo(552, ruleY + 0.5)
+    ctx.stroke()
+    ctx.font = `7px ${MONO_FONT}`
+    ctx.letterSpacing = '0.5px'
+    ctx.textAlign = 'left'
+    ctx.textBaseline = 'middle'
+    ctx.fillStyle = PALETTE.green
+    ctx.fillText(OUTRO_LABEL, box.x + 11, box.y + box.h / 2 + 0.5)
+
+    // Thin rules under the panel.
+    const underY = panel.y + panel.h + 24.5
+    ctx.strokeStyle = PALETTE.greenFaint
+    ctx.beginPath()
+    ctx.moveTo(248, underY)
+    ctx.lineTo(386, underY)
+    ctx.moveTo(608, underY)
+    ctx.lineTo(643, underY)
+    ctx.stroke()
+
+    ctx.restore()
+
+    // Title — fitted to the panel, two centered lines.
+    let unlocked = Math.max(0, Math.floor((t - OUTRO_TYPE_DELAY) * OUTRO_TYPE_RATE))
+    const total = OUTRO_LINES.join('').length
+    if (Math.min(unlocked, total) > this.outroTypedCount) {
+      this.outroTypedCount = Math.min(unlocked, total)
+      this.onSfx?.({ type: 'outro-type' })
+    }
+    const cx = panel.x + panel.w / 2
+    const lineGap = 72
+    const top = panel.y + panel.h / 2 - lineGap / 2
+
+    ctx.save()
+    ctx.letterSpacing = '2px'
+    ctx.font = `700 60px ${TITLE_FONT}`
+    const widest = Math.max(...OUTRO_LINES.map((line) => ctx.measureText(line).width))
+    const size = Math.min(60, (60 * (panel.w - 70)) / widest)
+    ctx.font = `700 ${size}px ${TITLE_FONT}`
     ctx.textAlign = 'center'
     ctx.textBaseline = 'middle'
 
@@ -1336,15 +1459,64 @@ export class Hud {
       }
 
       ctx.shadowColor = PALETTE.green
-      ctx.shadowBlur = 22 + glitch * 20
-      ctx.fillStyle = PALETTE.green
+      ctx.shadowBlur = 14 + glitch * 20
+      ctx.fillStyle = '#74f0a4'
       ctx.globalAlpha = glitch > 0.5 && Math.random() < 0.25 ? 0.4 : 1
       ctx.fillText(shown, cx + jitter, y)
       ctx.globalAlpha = 1
     })
     ctx.restore()
 
+    this.drawOutroGlitches(glitch)
     this.drawTearGlitch(glitch * 0.8)
+  }
+
+  /**
+   * Digital artifacts: random bars and horizontally displaced strips that live a
+   * few frames. Dense on arrival / exit, then sporadic bursts during the hold.
+   */
+  private drawOutroGlitches(glitch: number) {
+    const { ctx, canvas } = this
+    const now = this.meterTime
+
+    const spawn = (count: number) => {
+      for (let i = 0; i < count; i++) {
+        const slice = Math.random() < 0.45
+        const w = slice ? 120 + Math.random() * 420 : 10 + Math.random() * 120
+        this.outroGlitches.push({
+          x: Math.random() * (DESIGN.width - w),
+          y: Math.random() * DESIGN.height,
+          w,
+          h: slice ? 3 + Math.random() * 16 : 5 + Math.random() * 7,
+          dx: (Math.random() - 0.5) * 70,
+          slice,
+          until: now + 0.03 + Math.random() * 0.12,
+        })
+      }
+    }
+
+    if (glitch > 0.05 && Math.random() < 0.6) spawn(1 + Math.floor(glitch * 5))
+    if (now >= this.outroBurstAt) {
+      spawn(3 + Math.floor(Math.random() * 6))
+      this.onSfx?.({ type: 'outro-glitch' })
+      this.outroBurstAt = now + 0.4 + Math.random() * 1.6
+    }
+    this.outroGlitches = this.outroGlitches.filter((g) => g.until > now)
+
+    ctx.save()
+    for (const g of this.outroGlitches) {
+      if (g.slice) {
+        // Copy a strip of what's drawn and shove it sideways (device px).
+        const s = this.scale
+        ctx.setTransform(1, 0, 0, 1, 0, 0)
+        ctx.drawImage(canvas, g.x * s, g.y * s, g.w * s, g.h * s, (g.x + g.dx) * s, g.y * s, g.w * s, g.h * s)
+        ctx.setTransform(s, 0, 0, s, 0, 0)
+      } else {
+        ctx.fillStyle = Math.random() < 0.15 ? 'rgba(255, 255, 255, 0.8)' : '#74f0a4'
+        ctx.fillRect(g.x, g.y, g.w, g.h)
+      }
+    }
+    ctx.restore()
   }
 
   /** Type-in with a short scramble trail; `unlocked` counts glyphs across all lines. */

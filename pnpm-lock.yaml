@@ -17,6 +17,9 @@ importers:
       howler:
         specifier: ^2.2.4
         version: 2.2.4
+      postprocessing:
+        specifier: 6.39.5
+        version: 6.39.5(three@0.186.1)
       three:
         specifier: ^0.186.1
         version: 0.186.1
@@ -479,6 +482,11 @@ packages:
   postcss@8.5.22:
     resolution: {integrity: sha512-KBDEIpLrvpv16pp3K0Fw+UCoZfopFjjgeB+0tA/aaThfEE74kKDLrgg603YvOWJyg3+WYtyq3xYsQWsIyZlPqQ==}
     engines: {node: ^10 || ^12 || >=14}
+
+  postprocessing@6.39.5:
+    resolution: {integrity: sha512-YmH+t74J2X1lwYjKzK/tgs9C9kqWWPB9JwZiDF5mEf4BdCEAmEFbO8lXBA7NM0/j4g+x6FgD/Tt5/kT7ogbEDA==}
+    peerDependencies:
+      three: '>= 0.168.0 < 0.187.0'
 
   process-nextick-args@2.0.1:
     resolution: {integrity: sha512-3ouUOpQhtgrbOa17J7+uxOTpITYWaGP7/AhoR3+A+/1e9skrzelGi/dXzEYyvbxubEF6Wn2ypscTKiKJFFn1ag==}
@@ -1012,6 +1020,10 @@ snapshots:
       nanoid: 3.3.16
       picocolors: 1.1.1
       source-map-js: 1.2.1
+
+  postprocessing@6.39.5(three@0.186.1):
+    dependencies:
+      three: 0.186.1
 
   process-nextick-args@2.0.1: {}
 
