@@ -233,6 +233,21 @@ export class Hud {
     return this.signalScreen.count
   }
 
+  /** Bind the playable chart to the signal graph (peaks = notes). */
+  setRhythmChart(notes: { time: number; lane: number }[], loopDuration: number) {
+    this.signalScreen.setChart(notes, loopDuration)
+  }
+
+  /** Keep the graph locked to the AudioEngine song clock. */
+  setRhythmSongTime(songTime: number | null) {
+    this.signalScreen.setSongTime(songTime)
+  }
+
+  /** Visual feedback: collapse the peak for a caught note. */
+  registerRhythmHit(lane: number, noteTime: number, absSongTime: number) {
+    this.signalScreen.registerHit(lane, noteTime, absSongTime)
+  }
+
   /**
    * 0 = back to the intro screen; 1..3 = objects found; 4 = network reactivated. The first
    * object swaps to the signal screen (layout re-boot), each next one unlocks one more trace.
