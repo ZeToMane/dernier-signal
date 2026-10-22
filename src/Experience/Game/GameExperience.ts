@@ -67,10 +67,19 @@ export class GameExperience {
         this.onHit = callback;
     }
 
+    /**
+     * Start LOOP when signal object 1 is found — not on the base "fête" HUD.
+     * Safe to call repeatedly; no-ops once music has started.
+     */
+    startLoop() {
+        void this.begin();
+    }
+
     /** Debug stand-in for signal validation: LOOP gives way to the looping DROP. */
     playDrop() {
         this.dropRequested = true;
         if (this.phase === "loop") this.switchToDrop();
+        else if (this.phase === "idle") void this.begin();
     }
 
     update() {
@@ -113,11 +122,12 @@ export class GameExperience {
     }
 
     private bindUnlock() {
+        // Unlock AudioContext on first gesture only — music waits for signal stage 1.
         const onGesture = () => {
-            void this.begin();
+            void this.audio.unlockAudio();
         };
-        window.addEventListener("pointerdown", onGesture);
-        window.addEventListener("keydown", onGesture);
+        window.addEventListener("pointerdown", onGesture, { once: true });
+        window.addEventListener("keydown", onGesture, { once: true });
     }
 
     private async begin() {
@@ -126,7 +136,10 @@ export class GameExperience {
 
         await this.audio.unlockAudio();
         await this.ready;
-        if (!this.chart) return;
+        if (!this.chart) {
+            this.starting = false;
+            return;
+        }
 
         if (this.dropRequested) {
             this.switchToDrop();

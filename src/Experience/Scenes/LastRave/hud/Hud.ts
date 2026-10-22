@@ -861,7 +861,7 @@ export class Hud {
     ctx.setTransform(this.scale, 0, 0, this.scale, 0, 0)
 
     if (!this.powered) {
-      ctx.fillStyle = '#040A07'
+      ctx.fillStyle = '#010302'
       ctx.fillRect(0, 0, DESIGN.width, DESIGN.height)
       this.texture.needsUpdate = true
       return
