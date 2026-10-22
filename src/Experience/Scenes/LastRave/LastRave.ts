@@ -1,6 +1,10 @@
 import * as THREE from "three";
 import Scene from "../../Scene";
-import { createDebugPanel } from "./debug/createDebugPanel";
+import { GameExperience } from "../../Game/GameExperience";
+import {
+    createDebugPanel,
+    DEFAULT_LIGHTING_PARAMS,
+} from "./debug/createDebugPanel";
 import { Hud, loadHudFonts } from "./hud/Hud";
 import {
     designToScreen,
@@ -17,15 +21,25 @@ import {
     DEFAULT_POSTER_PARAMS,
     type Poster,
 } from "./objects/createPoster";
-import { createScreen, SCREEN_SURFACE_Z } from "./objects/createScreen";
-import { createWall } from "./objects/createWall";
+import { createEnvironment, type BunkerEnvironment } from "./objects/environment/createEnvironment";
+import { applySteelTextures } from "./objects/environment/shared";
+import {
+    createScreen,
+    SCREEN_SURFACE_Z,
+    type Screen,
+} from "./objects/createScreen";
+import {
+    applyWallLightParams,
+    applyWallTextures,
+    createWall,
+    DEFAULT_WALL_LIGHT_PARAMS,
+} from "./objects/createWall";
 
 const SCREEN_Z = 0.06;
 /** Share of the viewport the screen should fill, taken from the mockup. */
 const SCREEN_FILL = 0.82;
-const GLOW_INTENSITY = 18;
-/** Neutral fill keeping the wall readable while the screen is off; fades out as the green glow takes over. */
-const ROOM_LIGHT_INTENSITY = 40;
+/** screenGlow only hits wall / steel — never the HUD glass (avoids the center hot disc). */
+const GLOW_LAYER = 1;
 
 type Globe = ReturnType<typeof createGlobe>;
 
@@ -33,14 +47,27 @@ export default class LastRave extends Scene {
     ready = false;
 
     hud!: Hud;
+    game = new GameExperience();
     globe!: Globe;
     poster!: Poster;
+    wall!: THREE.Mesh;
+    screen!: Screen;
+    environment!: BunkerEnvironment;
     screenGlow!: THREE.PointLight;
     roomLight!: THREE.PointLight;
+    topLight!: THREE.DirectionalLight;
+    ambientLight!: THREE.AmbientLight;
+    lastFlicker = 1;
 
     cameraMotion = { ...DEFAULT_CAMERA_MOTION };
     posterParams = { ...DEFAULT_POSTER_PARAMS };
+    lightingParams = { ...DEFAULT_LIGHTING_PARAMS };
+    wallLightParams = { ...DEFAULT_WALL_LIGHT_PARAMS };
     posterMap: THREE.Texture | null = null;
+    posterNormalMap: THREE.Texture | null = null;
+    posterRoughnessMap: THREE.Texture | null = null;
+    posterNormal = { enabled: true };
+    screenRoughness = { enabled: true };
     posterViewHeight = 1;
     cameraDistance = 0;
 
@@ -56,6 +83,15 @@ export default class LastRave extends Scene {
     punchZ = 0;
     punchRoll = 0;
 
+    // Scratch for poster ↔ scene light sync (view space).
+    private readonly _lightDir = new THREE.Vector3();
+    private readonly _roomViewPos = new THREE.Vector3();
+    private readonly _glowViewPos = new THREE.Vector3();
+    private readonly _ambientColor = new THREE.Color();
+    private readonly _keyColor = new THREE.Color();
+    private readonly _roomColor = new THREE.Color();
+    private readonly _glowColor = new THREE.Color();
+
     constructor() {
         super();
 
@@ -66,13 +102,24 @@ export default class LastRave extends Scene {
         this.setHud();
         this.setObjects();
         this.setLights();
-        this.setPosterTexture();
+        this.setTextures();
         this.setDebug();
+        this.bindRhythm();
+        this.syncCustomLights();
 
         this.experience.sizes.on("resize", () => this.resize());
         this.resize();
 
         this.ready = true;
+    }
+
+    bindRhythm() {
+        this.game.whenChartReady((chart, loopDuration) => {
+            this.hud.setRhythmChart(chart.notes, loopDuration);
+        });
+        this.game.whenHit((lane, noteTime, absSongTime) => {
+            this.hud.registerRhythmHit(lane, noteTime, absSongTime);
+        });
     }
 
     get maxAnisotropy() {
@@ -86,8 +133,8 @@ export default class LastRave extends Scene {
     }
 
     setObjects() {
-        const screen = createScreen(this.hud.texture);
-        screen.position.z = SCREEN_Z;
+        this.screen = createScreen(this.hud.texture);
+        this.screen.group.position.z = SCREEN_Z;
 
         this.globe = createGlobe();
         const globePosition = designToScreen(GLOBE.x, GLOBE.y);
@@ -97,44 +144,117 @@ export default class LastRave extends Scene {
             SCREEN_SURFACE_Z + 0.01,
         );
         this.globe.setScale(designToScreenLength(GLOBE.radius));
-        screen.add(this.globe.group);
+        this.screen.group.add(this.globe.group);
 
         this.poster = createPoster(this.posterParams);
+        this.wall = createWall();
+        this.environment = createEnvironment();
 
-        this.container.add(createWall(), screen, this.poster.mesh);
+        this.experience.scene.background = new THREE.Color("#010302");
+        this.container.add(
+            this.wall,
+            this.environment.group,
+            this.screen.group,
+            this.poster.mesh,
+        );
+
+        // Wall + steel receive the green glow; HUD glass stays on layer 0 only.
+        this.wall.layers.enable(GLOW_LAYER);
+        this.environment.group.traverse((obj) => obj.layers.enable(GLOW_LAYER));
+        this.screen.group.traverse((obj) => obj.layers.set(0));
     }
 
     setLights() {
-        this.screenGlow = new THREE.PointLight(PALETTE.green, 0, 10, 2);
-        this.screenGlow.position.set(0, 0, 1.2);
+        // Green wash on concrete / steel — layer-masked so it never hits the HUD plane.
+        this.screenGlow = new THREE.PointLight(PALETTE.green, 0, 7, 1.4);
+        this.screenGlow.position.set(0, 0.05, 0.55);
+        this.screenGlow.layers.set(GLOW_LAYER);
 
+        // Dim fill only while the poster is up / screen off.
         this.roomLight = new THREE.PointLight(
-            "#9fb8ae",
-            ROOM_LIGHT_INTENSITY,
-            10,
+            "#6a7a72",
+            this.lightingParams.room,
+            8,
             2,
         );
-        this.roomLight.position.set(0, 0, 1.2);
+        this.roomLight.position.set(0, 0.2, 1.4);
 
-        const topLight = new THREE.DirectionalLight("#9fb8ae", 0.8);
-        topLight.position.set(0.5, 3, 2);
+        this.topLight = new THREE.DirectionalLight(
+            "#6a7a72",
+            this.lightingParams.key,
+        );
+        this.topLight.position.set(0.8, 1.6, 2.5);
+
+        this.ambientLight = new THREE.AmbientLight(
+            "#1c2420",
+            this.lightingParams.ambient,
+        );
+
+        this.experience.camera.instance.layers.enable(GLOW_LAYER);
 
         this.container.add(
             this.screenGlow,
             this.roomLight,
-            topLight,
-            new THREE.AmbientLight("#4a6a5f", 0.6),
+            this.topLight,
+            this.ambientLight,
         );
     }
 
-    setPosterTexture() {
+    setTextures() {
         const resources = this.experience.resources;
         const apply = () => {
-            const texture = resources.items.posterTexture as THREE.Texture;
-            texture.colorSpace = THREE.SRGBColorSpace;
-            texture.anisotropy = this.maxAnisotropy;
-            this.posterMap = texture;
+            const poster = resources.items.posterTexture as THREE.Texture;
+            poster.colorSpace = THREE.SRGBColorSpace;
+            poster.anisotropy = this.maxAnisotropy;
+            this.posterMap = poster;
+
+            const posterNormal = resources.items.posterNormal as THREE.Texture;
+            posterNormal.colorSpace = THREE.NoColorSpace;
+            posterNormal.anisotropy = this.maxAnisotropy;
+            this.posterNormalMap = posterNormal;
+
+            const posterRoughness = resources.items
+                .posterRoughness as THREE.Texture;
+            posterRoughness.colorSpace = THREE.NoColorSpace;
+            posterRoughness.anisotropy = this.maxAnisotropy;
+            this.posterRoughnessMap = posterRoughness;
+
             this.applyPosterMap();
+
+            applyWallTextures(
+                this.wall,
+                {
+                    albedo: resources.items.concreteAlbedo as THREE.Texture,
+                    roughness: resources.items
+                        .concreteRoughness as THREE.Texture,
+                    normal: resources.items.concreteNormal as THREE.Texture,
+                },
+                this.maxAnisotropy,
+                this.wallLightParams,
+            );
+
+            applySteelTextures(
+                this.environment.materials,
+                {
+                    albedo: resources.items.steelAlbedo as THREE.Texture,
+                    roughness: resources.items.steelRoughness as THREE.Texture,
+                    normal: resources.items.steelNormal as THREE.Texture,
+                },
+                this.maxAnisotropy,
+            );
+
+            const screenOverlay = resources.items
+                .screenOverlay as THREE.Texture;
+            screenOverlay.colorSpace = THREE.SRGBColorSpace;
+            screenOverlay.anisotropy = this.maxAnisotropy;
+            this.screen.setOverlay(screenOverlay);
+
+            const screenRoughness = resources.items
+                .screenRoughness as THREE.Texture;
+            screenRoughness.colorSpace = THREE.NoColorSpace;
+            screenRoughness.anisotropy = this.maxAnisotropy;
+            this.screen.setRoughnessMap(screenRoughness);
+            this.screen.setRoughnessEnabled(this.screenRoughness.enabled);
         };
 
         if (resources.isReady) apply();
@@ -142,33 +262,61 @@ export default class LastRave extends Scene {
     }
 
     setDebug() {
-        createDebugPanel(this.hud, this.cameraMotion, this.posterParams, {
-            onGlobeBoost: () => this.globe.triggerBoost(),
-            onPosterFly: () => {
-                if (this.poster.gone || this.poster.flying) return;
-                this.poster.fly();
-                this.punch = { elapsed: 0 };
-                // Screen boots 200ms after the poster starts peeling off.
-                this.powerOnTimer = window.setTimeout(
-                    () => this.powerOn(),
-                    Math.max(0.02, this.posterParams.windCamHit) * 1000 + 200,
-                );
+        createDebugPanel(
+            this.hud,
+            this.cameraMotion,
+            this.posterParams,
+            this.lightingParams,
+            this.wallLightParams,
+            {
+                onWallLightChange: () =>
+                    applyWallLightParams(this.wall, this.wallLightParams),
+                onGlobeBoost: () => this.globe.triggerBoost(),
+                onPosterFly: () => {
+                    if (this.poster.gone || this.poster.flying) return;
+                    this.poster.fly();
+                    this.punch = { elapsed: 0 };
+                    // Screen boots 200ms after the poster starts peeling off.
+                    this.powerOnTimer = window.setTimeout(
+                        () => this.powerOn(),
+                        Math.max(0.02, this.posterParams.windCamHit) * 1000 +
+                            200,
+                    );
+                },
+                onPosterReset: () => {
+                    if (this.poster.gone) this.spawnPoster();
+                    else this.poster.reset();
+                    this.resetPunch();
+                    this.powerOff();
+                },
+                onSignalStage: (count) => {
+                    if (count > 0 && !this.hud.isPowered) this.powerOn();
+                    this.hud.setSignalStage(count);
+                    // Music starts on first signal object, not on the base "fête" screen.
+                    if (count >= 1) this.game.startLoop();
+                    if (count >= 4) this.game.playDrop();
+                },
+                onPosterNormalToggle: (enabled) => {
+                    this.posterNormal.enabled = enabled;
+                    this.poster.setNormalEnabled(enabled);
+                },
+                onScreenRoughnessToggle: (enabled) => {
+                    this.screenRoughness.enabled = enabled;
+                    this.screen.setRoughnessEnabled(enabled);
+                },
             },
-            onPosterReset: () => {
-                if (this.poster.gone) this.spawnPoster();
-                else this.poster.reset();
-                this.resetPunch();
-                this.powerOff();
-            },
-            onSignalStage: (count) => {
-                if (count > 0 && !this.hud.isPowered) this.powerOn();
-                this.hud.setSignalStage(count);
-            },
-        });
+            this.posterNormal,
+            this.screenRoughness,
+        );
     }
 
     applyPosterMap() {
         if (this.posterMap) this.poster.setMap(this.posterMap);
+        if (this.posterNormalMap) this.poster.setNormalMap(this.posterNormalMap);
+        this.poster.setNormalEnabled(this.posterNormal.enabled);
+        if (this.posterRoughnessMap) {
+            this.poster.setRoughnessMap(this.posterRoughnessMap);
+        }
     }
 
     spawnPoster() {
@@ -218,11 +366,13 @@ export default class LastRave extends Scene {
     }
 
     update() {
+        this.game.update();
         if (!this.ready) return;
 
         const time = this.experience.time.elapsed / 1000;
         const dt = this.experience.time.delta / 1000;
 
+        this.hud.setRhythmSongTime(this.game.songTime());
         this.hud.update(dt);
         if (this.hud.showsGlobe !== this.globeShown) {
             this.globeShown = this.hud.showsGlobe;
@@ -232,6 +382,11 @@ export default class LastRave extends Scene {
         this.poster.update(time, dt);
 
         this.updateScreenPower(dt);
+        this.environment.update(time, dt, {
+            screenPower: this.screenPower,
+            flicker: this.lastFlicker,
+            signalStage: this.hud.signalsFound,
+        });
         this.updatePunch(dt);
         this.updateCamera();
     }
@@ -242,9 +397,68 @@ export default class LastRave extends Scene {
         // Neon-tube style flicker while the screen warms up.
         const warming = this.screenPowerTarget === 1 && this.screenPower < 0.97;
         const flicker = warming && Math.random() < 0.25 ? 0.3 : 1;
-        this.screenGlow.intensity = GLOW_INTENSITY * this.screenPower * flicker;
-        this.roomLight.intensity = ROOM_LIGHT_INTENSITY * (1 - this.screenPower);
-        this.poster.setGlow(0.12 * this.screenPower * flicker);
+        this.lastFlicker = flicker;
+
+        const { ambient, room, key, screenGlow } = this.lightingParams;
+        // Kill room fill as the HUD takes over — wall should mostly catch green glow.
+        const fill = 1 - this.screenPower;
+        this.ambientLight.intensity = ambient * (0.35 + 0.65 * fill);
+        this.topLight.intensity = key * fill;
+        this.screenGlow.intensity = screenGlow * this.screenPower * flicker;
+        this.roomLight.intensity = room * fill;
+        this.syncCustomLights();
+    }
+
+    /** Drive poster + HUD glass shaders with the bunker lights. */
+    syncCustomLights() {
+        const camera = this.experience.camera.instance;
+        camera.updateMatrixWorld();
+        const view = camera.matrixWorldInverse;
+
+        // PointLight intensities are tuned for MeshStandard — scale down for custom shaders.
+        this._ambientColor
+            .copy(this.ambientLight.color)
+            .multiplyScalar(this.ambientLight.intensity * 0.85);
+
+        this._keyColor
+            .copy(this.topLight.color)
+            .multiplyScalar(this.topLight.intensity * 0.9);
+        this._lightDir
+            .copy(this.topLight.position)
+            .normalize()
+            .transformDirection(view);
+
+        this._roomColor
+            .copy(this.roomLight.color)
+            .multiplyScalar(this.roomLight.intensity * 0.055);
+        this.roomLight
+            .getWorldPosition(this._roomViewPos)
+            .applyMatrix4(view);
+
+        this._glowColor.copy(this.screenGlow.color);
+        this.screenGlow
+            .getWorldPosition(this._glowViewPos)
+            .applyMatrix4(view);
+
+        const glowIntensity = this.screenGlow.intensity * 0.045;
+
+        if (!this.poster.gone) {
+            this.poster.setSceneLights({
+                ambient: this._ambientColor,
+                keyColor: this._keyColor,
+                keyDir: this._lightDir,
+                roomColor: this._roomColor,
+                roomPos: this._roomViewPos,
+                roomDistance: this.roomLight.distance,
+                roomDecay: this.roomLight.decay,
+                glowColor: this._glowColor,
+                glowPos: this._glowViewPos,
+                glowIntensity,
+                glowDistance: this.screenGlow.distance,
+                glowDecay: this.screenGlow.decay,
+            });
+        }
+
     }
 
     updatePunch(dt: number) {

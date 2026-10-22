@@ -4,6 +4,21 @@ import type { MeterFluidParams } from '../hud/meterFluid'
 import { HUD_MODULES } from '../hud/modules'
 import type { CameraMotionParams } from '../objects/cameraMotion'
 import type { PosterParams } from '../objects/createPoster'
+import type { WallLightParams } from '../objects/createWall'
+
+export type LightingParams = {
+  ambient: number
+  room: number
+  key: number
+  screenGlow: number
+}
+
+export const DEFAULT_LIGHTING_PARAMS: LightingParams = {
+  ambient: 0.12,
+  room: 8,
+  key: 0.25,
+  screenGlow: 22,
+}
 
 function bindFluidParams(folder: ReturnType<Pane['addFolder']>, params: MeterFluidParams) {
   folder.addBinding(params, 'speed', { min: 0, max: 1.5, step: 0.01, label: 'Speed' })
@@ -59,18 +74,66 @@ function bindPosterParams(folder: ReturnType<Pane['addFolder']>, params: PosterP
   fly.addBinding(params, 'out', { min: 0, max: 2, step: 0.05, label: 'Avant (Z)' })
 }
 
+function bindLightingParams(pane: Pane, lighting: LightingParams) {
+  const folder = pane.addFolder({ title: 'Lumière', expanded: true })
+  folder.addBinding(lighting, 'ambient', { min: 0, max: 2, step: 0.01, label: 'Ambiante' })
+  folder.addBinding(lighting, 'room', { min: 0, max: 80, step: 0.5, label: 'Room (écran off)' })
+  folder.addBinding(lighting, 'key', { min: 0, max: 4, step: 0.05, label: 'Directionnelle' })
+  folder.addBinding(lighting, 'screenGlow', { min: 0, max: 40, step: 0.5, label: 'Glow écran' })
+}
+
+function bindWallLightParams(
+  pane: Pane,
+  wall: WallLightParams,
+  onChange: () => void,
+) {
+  const folder = pane.addFolder({ title: 'Mur béton (lumière)', expanded: true })
+  folder
+    .addBinding(wall, 'color', { label: 'Teinte' })
+    .on('change', onChange)
+  folder
+    .addBinding(wall, 'roughness', { min: 0, max: 1, step: 0.01, label: 'Roughness' })
+    .on('change', onChange)
+  folder
+    .addBinding(wall, 'metalness', { min: 0, max: 1, step: 0.01, label: 'Metalness' })
+    .on('change', onChange)
+  folder
+    .addBinding(wall, 'normalScale', {
+      min: 0,
+      max: 2,
+      step: 0.01,
+      label: 'Relief (normal)',
+    })
+    .on('change', onChange)
+}
+
 export function createDebugPanel(
   hud: Hud,
   cameraMotion: CameraMotionParams,
   posterParams: PosterParams,
+  lighting: LightingParams,
+  wallLight: WallLightParams,
   actions: {
     onGlobeBoost: () => void
     onPosterFly: () => void
     onPosterReset: () => void
     onSignalStage: (count: number) => void
+    onWallLightChange: () => void
+    onPosterNormalToggle: (enabled: boolean) => void
+    onScreenRoughnessToggle: (enabled: boolean) => void
   },
+  posterNormal: { enabled: boolean },
+  screenRoughness: { enabled: boolean },
 ) {
   const pane = new Pane({ title: 'The Last Rave', expanded: true })
+
+  bindLightingParams(pane, lighting)
+  bindWallLightParams(pane, wallLight, actions.onWallLightChange)
+
+  const screenFx = pane.addFolder({ title: 'Écran HUD', expanded: true })
+  screenFx
+    .addBinding(screenRoughness, 'enabled', { label: 'Roughness map' })
+    .on('change', (ev) => actions.onScreenRoughnessToggle(ev.value))
 
   const signal = pane.addFolder({ title: 'Écran 2 — Signal', expanded: true })
   for (const count of [1, 2, 3]) {
@@ -84,6 +147,9 @@ export function createDebugPanel(
   const poster = pane.addFolder({ title: 'Affiche', expanded: true })
   poster.addButton({ title: "Envoler l'affiche" }).on('click', actions.onPosterFly)
   poster.addButton({ title: 'Reset affiche (écran off)' }).on('click', actions.onPosterReset)
+  poster
+    .addBinding(posterNormal, 'enabled', { label: 'Normal map' })
+    .on('change', (ev) => actions.onPosterNormalToggle(ev.value))
   bindPosterParams(poster, posterParams)
 
   const modules = pane.addFolder({ title: 'Modules HUD', expanded: true })
