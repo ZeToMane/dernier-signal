@@ -108,6 +108,11 @@ export class GameExperience {
         await this.arduino.connect();
     }
 
+    /** True once LOOP / DROP music is playing (ambience ducks under it). */
+    get musicPlaying() {
+        return this.phase !== "idle";
+    }
+
     /** Seconds since the current BGM started, or null before unlock. */
     songTime(): number | null {
         if (this.phase === "idle") return null;
@@ -269,6 +274,28 @@ export class GameExperience {
             arpege: "/assets/sounds/ARPEGE.mp3",
             drum: "/assets/sounds/DRUM.mp3",
             pad: "/assets/sounds/PAD.mp3",
+            // Sound design one-shots (HUD appearances, glitches…).
+            beep: "/assets/sounds/beep.mp3",
+            blip: "/assets/sounds/blip.mp3",
+            blipBurst: "/assets/sounds/blipblipblipblip.mp3",
+            click: "/assets/sounds/click.mp3",
+            click2: "/assets/sounds/click2.mp3",
+            tic: "/assets/sounds/tic.mp3",
+            ticBurst: "/assets/sounds/tictictictic.mp3",
+            windPoster: "/assets/sounds/wind-poster.mp3",
+            paperRip: "/assets/sounds/paper-ripped.mp3",
+            screenOn: "/assets/sounds/screen-turned-on.mp3",
+            glitchHard: "/assets/sounds/glitch2.mp3",
+            addSignal: "/assets/sounds/add-signal.mp3",
+            addSignal2: "/assets/sounds/add-signal2.mp3",
+            addSignal3: "/assets/sounds/add-signal3.mp3",
+            lamp1: "/assets/sounds/lamp1.mp3",
+            lamp2: "/assets/sounds/lamp2.mp3",
+            lamp3: "/assets/sounds/lamp3.mp3",
+            // Looping beds.
+            ambient: "/assets/loops/bunker-ambient.mp3",
+            screenHum: "/assets/loops/screen.mp3",
+            breath: "/assets/sounds/human-breath.mp3",
         });
 
         const res = await fetch("/assets/charts/chart.json");

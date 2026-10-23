@@ -8,6 +8,11 @@ export default class Renderer {
     scene: THREE.Scene;
     camera: Experience["camera"];
     instance!: THREE.WebGLRenderer;
+    /** Optional post chain owned by the active scene — renders instead of the plain pass. */
+    postProcess: {
+        render(dt: number): void;
+        setSize(width: number, height: number): void;
+    } | null = null;
 
     constructor() {
         this.experience = Experience.instance;
@@ -35,9 +40,14 @@ export default class Renderer {
     resize() {
         this.instance.setSize(this.sizes.width, this.sizes.height);
         this.instance.setPixelRatio(this.sizes.pixelRatio);
+        this.postProcess?.setSize(this.sizes.width, this.sizes.height);
     }
 
     async update() {
+        if (this.postProcess) {
+            this.postProcess.render(this.experience.time.delta / 1000);
+            return;
+        }
         await this.instance.render(this.scene, this.camera.instance);
     }
 }
