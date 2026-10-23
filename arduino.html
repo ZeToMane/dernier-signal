@@ -25,22 +25,25 @@
             <h2>Corne (micro A1)</h2>
             <p>Amplitude : <span id="horn-level">0</span> — souffles : <span id="horn-count">0</span></p>
             <meter id="horn-meter" min="0" max="1023" value="0"></meter>
-            <label>Seuil <input id="horn-threshold" type="range" min="10" max="1023" value="200" /> <span id="horn-threshold-value">200</span></label>
+            <label>Seuil <input id="horn-threshold" type="range" min="10" max="1023" value="300" /> <span id="horn-threshold-value">300</span></label>
         </section>
 
         <section id="star">
             <h2>Étoile (photorésistance A3)</h2>
-            <p>Brut : <span id="star-raw">0</span> — normalisé : <span id="star-value">0.00</span></p>
-            <meter id="star-meter" min="0" max="1" value="0"></meter>
+            <p>Brut : <span id="star-raw">0</span> — état : <strong id="star-state">découverte</strong> — hits : <span id="star-count">0</span></p>
+            <p style="font-size:0.85em;color:#555">Hit = découvrir (main ouverte). Cacher = arme. Seuils relatifs à la lumière ambiante (voir la console).</p>
+            <meter id="star-meter" min="0" max="1023" value="0"></meter>
             <p>
-                <button id="star-min">Calibrer sombre</button>
-                <button id="star-max">Calibrer lumineux</button>
-                min <span id="star-min-value">0</span> / max <span id="star-max-value">1023</span>
+                Arme si chute de <input id="star-cover" type="range" min="20" max="250" value="70" />
+                <span id="star-cover-value">70</span>
+                — hit si remontée de <input id="star-uncover" type="range" min="20" max="250" value="50" />
+                <span id="star-uncover-value">50</span>
             </p>
         </section>
 
         <section id="hourglass">
-            <h2>Sablier (tilt D11)</h2>
+            <h2>Sablier (tilt D2)</h2>
+            <p>État : <strong id="hourglass-state">—</strong></p>
             <p>Kicks : <span id="hourglass-count">0</span></p>
         </section>
 

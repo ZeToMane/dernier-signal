@@ -181,9 +181,6 @@ const FLASHLIGHT_SEEDS = [
         decay: 1.8,
     },
 ];
-/** Network reactivates once all 3 objects are found and accuracy stays ≥ FINAL_ACCURACY for FINAL_HOLD s. */
-const FINAL_ACCURACY = 60;
-const FINAL_HOLD = 3;
 
 type Globe = ReturnType<typeof createGlobe>;
 
@@ -255,7 +252,12 @@ export default class LastRave extends Scene {
     /** Previous frame's merge-glitch level (fires the drop glitch sound on the rising edge). */
     private lastMergeGlitch = 0;
     globeShown = false;
-    accuracyHold = 0;
+    arduinoState = {
+        status: "déconnecté",
+        kicks: 0,
+        starHits: 0,
+        starState: "découverte",
+    };
 
     // Wind punch: snap right+down, then slow dazed ease back to center.
     punch: { elapsed: number } | null = null;
@@ -290,6 +292,7 @@ export default class LastRave extends Scene {
         this.setTextures();
         this.setDebug();
         this.bindRhythm();
+        this.bindArduino();
         this.syncCustomLights();
 
         this.experience.sizes.on("resize", () => this.resize());
@@ -623,6 +626,11 @@ export default class LastRave extends Scene {
                     this.screenRoughness.enabled = enabled;
                     this.screen.setRoughnessEnabled(enabled);
                 },
+                onArduinoConnect: () => {
+                    this.game.connectArduino().catch((error: Error) => {
+                        this.arduinoState.status = error.message;
+                    });
+                },
                 onTexturesToggle: (enabled) => this.setTexturesEnabled(enabled),
                 onAccentToggle: (pink) => this.setAccent(pink ? "pink" : "green"),
             },
@@ -644,6 +652,7 @@ export default class LastRave extends Scene {
                 specularAA,
                 sound: this.soundParams,
             },
+            this.arduinoState,
         );
         // Hidden for the show — H brings it back.
         pane.hidden = true;
@@ -684,7 +693,29 @@ export default class LastRave extends Scene {
                 if (tinted.emissive?.equals(from)) tinted.emissive.copy(to);
             }
         });
-        );
+    }
+
+    bindArduino() {
+        const { arduino } = this.game;
+        const setStatus = () => {
+            this.arduinoState.status = arduino.connected ? "connecté" : "déconnecté";
+        };
+        // May already be connected: reconnect() runs as soon as the game is created.
+        setStatus();
+        arduino.on("connected", setStatus);
+        arduino.on("disconnected", setStatus);
+        arduino.hourglass.on("kick", () => {
+            this.arduinoState.kicks = arduino.hourglass.count;
+        });
+        const syncStar = () => {
+            this.arduinoState.starHits = arduino.star.count;
+            this.arduinoState.starState = arduino.star.covered
+                ? "cachée"
+                : "découverte";
+        };
+        arduino.star.on("hit", syncStar);
+        arduino.star.on("cover", syncStar);
+        arduino.star.on("uncover", syncStar);
     }
 
     /** 0 = intro, 1..3 = objects found, 4 = network reactivated (final). */
@@ -692,26 +723,27 @@ export default class LastRave extends Scene {
         if (count > 0 && !this.hud.isPowered) this.powerOn();
         this.hud.setSignalStage(count);
         this.game.setActiveLanes(Math.min(3, count));
-        this.accuracyHold = 0;
         // Music starts on first signal object, not on the base "fête" screen.
         if (count >= 1) this.game.startLoop();
         if (count >= 4) this.game.playDrop();
     }
 
-    updateFinalTrigger(dt: number) {
-        const accuracy = this.game.accuracy;
-        const armed = this.hud.signalsFound === 3;
-
-        if (armed && accuracy >= FINAL_ACCURACY) this.accuracyHold += dt;
-        else this.accuracyHold = 0;
+    /**
+     * Network reactivates once all 3 objects are found and the gauge is full (see GameExperience).
+     * Before that, the ring shows the accuracy as feedback.
+     */
+    updateFinalTrigger() {
+        const allFound = this.hud.signalsFound === 3;
+        const gauge = this.game.gauge;
 
         this.hud.setRhythmAccuracy(
-            accuracy,
-            armed ? FINAL_ACCURACY : 0,
-            this.accuracyHold / FINAL_HOLD,
+            allFound ? gauge : this.game.accuracy,
+            allFound ? 100 : 0,
+            // Outer arc + pulse speed up as the gauge nears full.
+            allFound ? gauge / 100 : 0,
         );
 
-        if (this.accuracyHold >= FINAL_HOLD) this.setSignalStage(4);
+        if (allFound && gauge >= 100) this.setSignalStage(4);
     }
 
     applyPosterMap() {
@@ -784,7 +816,7 @@ export default class LastRave extends Scene {
 
         this.hud.setRhythmSongTime(this.game.songTime());
         this.hud.setMusicLevel(this.game.audio.bassLevel);
-        this.updateFinalTrigger(dt);
+        this.updateFinalTrigger();
         this.hud.update(dt);
         if (this.hud.showsGlobe !== this.globeShown) {
             this.globeShown = this.hud.showsGlobe;

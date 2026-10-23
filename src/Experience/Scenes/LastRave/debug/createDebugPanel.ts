@@ -232,6 +232,7 @@ export function createDebugPanel(
     onScreenRoughnessToggle: (enabled: boolean) => void
     onTexturesToggle: (enabled: boolean) => void
     onAccentToggle: (pink: boolean) => void
+    onArduinoConnect: () => void
   },
   posterNormal: { enabled: boolean },
   screenRoughness: { enabled: boolean },
@@ -250,8 +251,16 @@ export function createDebugPanel(
   },
   cables: { specs: CableSpec[]; rebuild: (index: number) => void },
   postFx: PostFxDebug,
+  arduinoState: { status: string; kicks: number; starHits: number; starState: string },
 ) {
   const pane = new Pane({ title: 'The Last Rave', expanded: true })
+
+  const arduino = pane.addFolder({ title: 'Arduino', expanded: true })
+  arduino.addButton({ title: 'Connecter Arduino' }).on('click', actions.onArduinoConnect)
+  arduino.addBinding(arduinoState, 'status', { readonly: true, label: 'Statut' })
+  arduino.addBinding(arduinoState, 'kicks', { readonly: true, label: 'Kicks sablier', format: (v) => v.toFixed(0) })
+  arduino.addBinding(arduinoState, 'starHits', { readonly: true, label: 'Hits étoile', format: (v) => v.toFixed(0) })
+  arduino.addBinding(arduinoState, 'starState', { readonly: true, label: 'Étoile' })
 
   const scene = pane.addFolder({ title: 'Scène', expanded: true })
   scene

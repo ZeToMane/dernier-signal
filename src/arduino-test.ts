@@ -71,21 +71,39 @@ horn.on("blow", () => {
 });
 
 // ---- Étoile ------------------------------------------------------------------
-const showCalibration = () => {
-    $("star-min-value").textContent = star.min.toFixed(0);
-    $("star-max-value").textContent = star.max.toFixed(0);
+const starUncover = $<HTMLInputElement>("star-uncover");
+const starCover = $<HTMLInputElement>("star-cover");
+
+starUncover.oninput = () => {
+    star.uncoverRise = Number(starUncover.value);
+    $("star-uncover-value").textContent = starUncover.value;
+};
+starCover.oninput = () => {
+    star.coverDrop = Number(starCover.value);
+    $("star-cover-value").textContent = starCover.value;
 };
 
-$("star-min").onclick = () => { star.calibrate("min"); showCalibration(); };
-$("star-max").onclick = () => { star.calibrate("max"); showCalibration(); };
+star.on("change", () => {
+    $("star-raw").textContent = String(Math.round(star.raw));
+    $<HTMLMeterElement>("star-meter").value = star.raw;
+    $("star-state").textContent = star.covered ? "cachée" : "découverte";
+});
 
-star.on("change", (value: number) => {
-    $("star-raw").textContent = String(star.raw);
-    $("star-value").textContent = value.toFixed(2);
-    $<HTMLMeterElement>("star-meter").value = value;
+star.on("hit", () => {
+    $("star-count").textContent = String(star.count);
+    flash("star");
+    write("Étoile : hit (découverte / main ouverte)");
 });
 
 // ---- Sablier -----------------------------------------------------------------
+arduino.on("tilt", (contact: boolean) => {
+    $("hourglass-state").textContent = contact ? "CONTACT" : "ouvert";
+});
+
+hourglass.on("change", (contact: boolean) => {
+    write(`Sablier : ${contact ? "CONTACT" : "ouvert"}`);
+});
+
 hourglass.on("kick", () => {
     $("hourglass-count").textContent = String(hourglass.count);
     flash("hourglass");
