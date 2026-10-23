@@ -1,3 +1,4 @@
+import Arduino from "../Arduino/Arduino";
 import AudioEngine from "../Audio/AudioEngine";
 import { GameEngine, type ChartData, type ChartNote } from "./GameEngine";
 import { LaneInput } from "./LaneInput";
@@ -7,11 +8,55 @@ const LANES = [
     { sample: "drum" },
     { sample: "pad" },
 ] as const;
+/** La corne joue l'arpège (lane) quand on souffle, en plus de la touche D. */
+const HORN_LANE = 0;
+/** Le sablier joue le kick (drum lane), en plus de la touche F. */
+const HOURGLASS_LANE = 1;
+/** L'étoile joue le pad / fréquence (lane) en s'ouvrant, en plus de la touche J. La cacher ne fait qu'armer. */
+const STAR_LANE = 2;
 
 /** |hit - note| under this (seconds) counts. Early hits are scheduled on the note. */
 const HIT_WINDOW = 0.12;
-/** Accuracy = share of hits among the last N judgments (hits, misses, stray presses). */
-const ACCURACY_SAMPLES = 10;
+/**
+ * Ouvrir la main en rythme est moins précis qu'une touche : fenêtre élargie pour l'étoile.
+ * Sans risque de capter la mauvaise note : une seule note pad par boucle (~6 s).
+ */
+const STAR_HIT_WINDOW = 0.25;
+/**
+ * Délai capteur → jeu de l'étoile (mesures toutes les 15 ms, lissées sur 4, + série), en secondes.
+ * Retranché de l'instant du hit pour juger le geste réel, pas sa détection.
+ */
+const STAR_LATENCY = 0.04;
+/** Souffler en rythme est aussi approximatif ; une seule note arpège par boucle. */
+const HORN_HIT_WINDOW = 0.25;
+/**
+ * Délai micro → jeu, en secondes : tranches de 30 ms, souffle validé à la 3e au-dessus
+ * du seuil (Horn.ts), + série. Mesuré ≈ 60–90 ms après le début du souffle.
+ */
+const HORN_LATENCY = 0.08;
+
+const hitWindow = (lane: number) =>
+    lane === STAR_LANE ? STAR_HIT_WINDOW : lane === HORN_LANE ? HORN_HIT_WINDOW : HIT_WINDOW;
+/**
+ * Accuracy = share of hits among the last N judgments (hits, misses, stray presses).
+ * ~3 loops (10 notes each): one mistake costs ~3 points instead of 10, so it doesn't swing.
+ */
+const ACCURACY_SAMPLES = 30;
+/**
+ * Final gauge (all lanes active): each caught note adds its lane's points, misses cost nothing.
+ * Rare notes weigh more so the 3 players count alike (per loop: 8 kicks, 1 pad, 1 arpège).
+ */
+const GAUGE_POINTS = [3, 1, 3];
+/** Points to fill the gauge (~5–6 points per loop when playing decently → ~30–40 s). */
+const GAUGE_TARGET = 30;
+/**
+ * A miss (or stray press) takes points back, so the gauge feels at stake. But never more than
+ * MISS_MAX_DROP under its best level, and the penalty fades to 0 over MISS_FADE s: a struggling
+ * group still finishes (simulated: every level of play fills it in < 2 min, a good one in ~20 s).
+ */
+const MISS_PENALTY = 0.5;
+const MISS_MAX_DROP = 3;
+const MISS_FADE = 60;
 
 type Phase = "idle" | "loop" | "drop";
 
@@ -25,6 +70,8 @@ export class GameExperience {
     readonly audio = new AudioEngine();
     readonly engine = new GameEngine(this.audio);
 
+    readonly arduino = new Arduino();
+
     private readonly input = new LaneInput((lane) => this.onLane(lane));
     private readonly ready: Promise<void>;
     private chart: ChartData | null = null;
@@ -33,6 +80,10 @@ export class GameExperience {
     /** Only lanes whose trace is revealed (one per found object) are judged. */
     private activeLanes = 0;
     private judgments: boolean[] = [];
+    private gaugePoints = 0;
+    private gaugePeak = 0;
+    /** AudioContext time the gauge started (all lanes active). */
+    private gaugeStart = 0;
     private starting = false;
     private dropRequested = false;
     private onChartReady:
@@ -43,10 +94,18 @@ export class GameExperience {
         | null = null;
 
     constructor() {
-        this.engine.scheduleAheadTime = HIT_WINDOW + 0.08;
+        // Notes en attente assez tôt pour accepter un hit en avance sur la plus large fenêtre.
+        this.engine.scheduleAheadTime = Math.max(HIT_WINDOW, STAR_HIT_WINDOW, HORN_HIT_WINDOW) + 0.08;
 
         this.ready = this.load();
         this.bindUnlock();
+        this.bindArduino();
+    }
+
+    /** Opens the board picker — must be called from a click. */
+    async connectArduino() {
+        if (this.arduino.connected) return;
+        await this.arduino.connect();
     }
 
     /** Seconds since the current BGM started, or null before unlock. */
@@ -80,6 +139,16 @@ export class GameExperience {
         void this.begin();
     }
 
+    /** 0–100: final gauge, filled by caught notes once every lane is active. */
+    get gauge() {
+        return Math.min(100, (this.gaugePoints / GAUGE_TARGET) * 100);
+    }
+
+    /** Judgments counted in `accuracy` (max ACCURACY_SAMPLES). */
+    get judged() {
+        return this.judgments.length;
+    }
+
     /** 0–100, over the last ACCURACY_SAMPLES judgments (0 before any). */
     get accuracy() {
         if (this.judgments.length === 0) return 0;
@@ -89,8 +158,15 @@ export class GameExperience {
 
     /** Number of playable lanes (= signal objects found, max 3). */
     setActiveLanes(count: number) {
-        this.activeLanes = Math.max(0, Math.min(LANES.length, count));
-        if (this.activeLanes === 0) this.judgments = [];
+        const lanes = Math.max(0, Math.min(LANES.length, count));
+        // New lane = new game: accuracy only reflects play with the current lanes.
+        if (lanes !== this.activeLanes) {
+            this.judgments = [];
+            this.gaugePoints = 0;
+            this.gaugePeak = 0;
+            this.gaugeStart = this.audio.currentTime;
+        }
+        this.activeLanes = lanes;
     }
 
     /** Debug stand-in for signal validation: LOOP gives way to the looping DROP. */
@@ -106,20 +182,84 @@ export class GameExperience {
         const now = this.audio.currentTime;
         this.pending = this.pending.filter((note) => {
             if (note.hit) return false;
-            if (now <= note.at + HIT_WINDOW) return true;
+            // Garde la note le temps qu'un hit compensé (capteur) puisse encore l'atteindre.
+            if (now <= note.at + hitWindow(note.lane) + Math.max(STAR_LATENCY, HORN_LATENCY)) return true;
             if (note.lane < this.activeLanes) this.judge(false);
             return false;
         });
     }
 
     private judge(hit: boolean) {
+        if (!hit && this.activeLanes === LANES.length) {
+            const elapsed = this.audio.currentTime - this.gaugeStart;
+            const penalty = MISS_PENALTY * Math.max(0, 1 - elapsed / MISS_FADE);
+            this.gaugePoints = Math.max(
+                0,
+                this.gaugePeak - MISS_MAX_DROP,
+                this.gaugePoints - penalty,
+            );
+        }
         this.judgments.push(hit);
         if (this.judgments.length > ACCURACY_SAMPLES) this.judgments.shift();
     }
 
     dispose() {
         this.input.dispose();
+        void this.arduino.disconnect();
         this.engine.stopLevel();
+    }
+
+    private bindArduino() {
+        this.arduino.hourglass.on("kick", () => this.onLane(HOURGLASS_LANE));
+        this.arduino.horn.on("blow", () => {
+            const result = this.onLane(HORN_LANE, HORN_LATENCY);
+            this.logLaneTiming("corne / arpège", HORN_LANE, result);
+        });
+        this.arduino.star.on("hit", () => {
+            const result = this.onLane(STAR_LANE, STAR_LATENCY);
+            this.logLaneTiming("étoile / pad", STAR_LANE, result);
+        });
+        // Board already granted on this origin (e.g. via arduino.html): reopen silently.
+        this.arduino.reconnect().catch(() => {});
+    }
+
+    private logLaneTiming(
+        label: string,
+        lane: number,
+        result: ReturnType<GameExperience["onLane"]>,
+    ) {
+        if (result.ignored) {
+            console.log(
+                `%c[${label}] IGNORÉ`,
+                "color:#ff5d63;font-weight:bold",
+                `| ${result.reason} (phase=${this.phase}, lanes=${this.activeLanes}/3)`,
+            );
+            return;
+        }
+
+        const ms = Math.round(result.distanceMs);
+        const windowMs = Math.round(hitWindow(lane) * 1000);
+        if (result.success) {
+            const earlyLate = result.deltaMs < 0 ? "en avance" : "en retard";
+            console.log(
+                `%c[${label}] RÉUSSI`,
+                "color:#2fe0a0;font-weight:bold",
+                `| écart ${ms} ms (${earlyLate}) — fenêtre ±${windowMs} ms | ` +
+                    `song=${result.songTime.toFixed(2)}s note=${result.noteTime.toFixed(2)}s jauge=${this.gauge.toFixed(0)}%`,
+            );
+            return;
+        }
+
+        const nearest =
+            result.nearestMs === null
+                ? "aucune note à portée (trop tard ou trop tôt)"
+                : `note la plus proche à ${Math.round(result.nearestMs)} ms ` +
+                  `(hors fenêtre ±${windowMs} ms)`;
+        console.log(
+            `%c[${label}] RATÉ`,
+            "color:#ff5d63;font-weight:bold",
+            `| ${nearest} | song=${result.songTime.toFixed(2)}s accuracy=${this.accuracy.toFixed(0)}% jauge=${this.gauge.toFixed(0)}%`,
+        );
     }
 
     private async load() {
@@ -184,17 +324,46 @@ export class GameExperience {
         this.phase = "drop";
     }
 
-    private onLane(lane: number) {
-        if (this.phase !== "loop" || lane >= this.activeLanes) return;
+    /** `latency` (s) : délai de détection du capteur, retranché de l'instant du hit. */
+    private onLane(lane: number, latency = 0) {
+        const songTime =
+            this.phase === "idle" ? 0 : this.audio.currentTime - this.engine.startTime;
 
-        const now = this.audio.currentTime;
+        if (this.phase !== "loop") {
+            return {
+                ignored: true as const,
+                reason: "musique pas en loop",
+                success: false,
+                distanceMs: 0,
+                deltaMs: 0,
+                nearestMs: null as number | null,
+                songTime,
+                noteTime: 0,
+            };
+        }
+        if (lane >= this.activeLanes) {
+            return {
+                ignored: true as const,
+                reason: `lane ${lane} inactive (il faut Objet ${lane + 1})`,
+                success: false,
+                distanceMs: 0,
+                deltaMs: 0,
+                nearestMs: null as number | null,
+                songTime,
+                noteTime: 0,
+            };
+        }
+
+        const now = this.audio.currentTime - latency;
         let best: PendingNote | null = null;
         let bestDistance = Infinity;
+        let nearestDistance = Infinity;
 
         for (const note of this.pending) {
             if (note.hit || note.lane !== lane) continue;
             const distance = Math.abs(now - note.at);
-            if (distance <= HIT_WINDOW && distance < bestDistance) {
+            if (distance < nearestDistance) nearestDistance = distance;
+            if (distance <= hitWindow(lane) && distance < bestDistance) {
                 best = note;
                 bestDistance = distance;
             }
@@ -202,13 +371,42 @@ export class GameExperience {
 
         // Pressing with no note in reach counts as a miss — no spamming to 100%.
         this.judge(best !== null);
-        if (!best) return;
+
+        if (!best) {
+            return {
+                ignored: false as const,
+                reason: "",
+                success: false,
+                distanceMs: 0,
+                deltaMs: 0,
+                nearestMs:
+                    nearestDistance === Infinity ? null : nearestDistance * 1000,
+                songTime,
+                noteTime: 0,
+            };
+        }
 
         best.hit = true;
+        if (this.activeLanes === LANES.length) {
+            this.gaugePoints += GAUGE_POINTS[lane] ?? 1;
+            this.gaugePeak = Math.max(this.gaugePeak, this.gaugePoints);
+        }
         this.onHit?.(lane, best.time, best.at - this.engine.startTime);
         const sample = LANES[lane]?.sample;
-        if (!sample) return;
-        // Future hit: lock the sample to the chart. Late hit: play now.
-        this.audio.scheduleSound(sample, Math.max(best.at, now));
+        if (sample) {
+            // Future hit: lock the sample to the chart. Late hit: play now.
+            this.audio.scheduleSound(sample, Math.max(best.at, this.audio.currentTime));
+        }
+
+        return {
+            ignored: false as const,
+            reason: "",
+            success: true,
+            distanceMs: bestDistance * 1000,
+            deltaMs: (now - best.at) * 1000,
+            nearestMs: bestDistance * 1000,
+            songTime,
+            noteTime: best.time,
+        };
     }
 }
