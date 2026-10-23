@@ -37,6 +37,7 @@ export type SceneSfx =
   | { type: 'poster-wind' }
   | { type: 'poster-rip' }
   | { type: 'screen-on' }
+  | { type: 'screen-off' }
   | { type: 'merge-glitch' }
   /** Torch `index` (0..2) clicks on; `pan` -1 left … 1 right. */
   | { type: 'lamp-on'; index: number; pan: number }
@@ -86,6 +87,8 @@ const CUES: Partial<Record<SceneSfx['type'], Cue>> = {
   // Torch switch click — sample picked per torch (lamp1..3).
   'lamp-on': { sample: 'lamp1', volume: 0.7, rate: 1, jitter: 0.03, gap: 0 },
   'screen-on': { sample: 'screenOn', volume: 0.45, rate: 1, jitter: 0, gap: 1 },
+  // End of the show: old CRT dies with the music.
+  'screen-off': { sample: 'screenOff', volume: 0.6, rate: 1, jitter: 0, gap: 1 },
 }
 
 /** Object found 1 / 2 / 3 → sample. */

@@ -101,9 +101,7 @@ const CURVES: CurveConfig[] = [
     seed: 1.7,
   },
   {
-    get color() {
-      return PALETTE.greenLane
-    },
+    color: '#2fe0a0',
     amp: 20,
     cycles: 2,
     loop: 6,

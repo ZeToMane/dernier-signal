@@ -144,6 +144,12 @@ function keyedPath(keys: TorchKey[]) {
  * `size` scales the distance to the wall (closer = tighter spot), `power` the
  * intensity, `decay` the falloff sharpness.
  */
+/**
+ * Switch-off after the screen dies (s): wait `delay`, torches one by one every
+ * `stagger`, then the room light `roomAfter` after the last torch.
+ */
+const TORCHES_OFF = { delay: 0.9, stagger: 0.45, roomAfter: 0.9 };
+
 const FLASHLIGHT_SEEDS = [
     {
         path: keyedPath([
@@ -215,15 +221,20 @@ export default class LastRave extends Scene {
     greenKey!: THREE.DirectionalLight;
     greenLight = {
         enabled: true,
-        intensity: 0.1,
+        intensity: 0.25,
         /** Ambient (hemisphere) vs directional split — 0 = all directional, 1 = all ambient. */
-        ambientShare: 0.3,
+        ambientShare: 0.25,
         color: PALETTE.green as string,
         /** Where the directional comes from (only its direction matters, not its distance). */
         dirX: 0.45,
         dirY: 0.85,
         dirZ: 8.3,
     };
+    /**
+     * Light levels before the torches switch on (key L) — they ramp to
+     * `lightingParams.screenGlow` / `greenLight` as the torches light up.
+     */
+    beforeTorches = { screenGlow: 22, accentIntensity: 0.1, accentAmbientShare: 0.3 };
     postFx!: PostFx;
     postFxParams = structuredClone(DEFAULT_POSTFX_PARAMS);
     lastFlicker = 1;
@@ -248,10 +259,16 @@ export default class LastRave extends Scene {
 
     screenPower = 0;
     screenPowerTarget = 0;
+    /** End of the show: screen died, every accent light cut (reset by `powerOn`). */
+    blackedOut = false;
     powerOnTimer = 0;
     /** When L was pressed (s) — torches click on in sequence after it. Off until then. */
     private torchesReadyAt = Infinity;
     private readonly torchSwitched = [false, false, false];
+    /** End of the show: torches click off one by one after the screen dies (s, Infinity = never). */
+    private torchesOffAt = Infinity;
+    private readonly torchOff = [false, false, false];
+    private roomOff = false;
     /** Pending poster take-off while the wind sound leads in. */
     flyTimer = 0;
     /** Previous frame's merge-glitch level (fires the drop glitch sound on the rising edge). */
@@ -295,6 +312,8 @@ export default class LastRave extends Scene {
         this.setLights();
         this.setPostFx();
         this.setTextures();
+        // Pink by default — the debug toggle switches back to green.
+        this.setAccent("pink");
         this.setDebug();
         this.bindRhythm();
         this.bindArduino();
@@ -431,6 +450,7 @@ export default class LastRave extends Scene {
 
         this.hud.onTrigger = () => this.postFx.kick(0.35);
         this.hud.onSfx = (cue) => this.sound.play(cue);
+        this.hud.onShutdown = () => this.blackout();
     }
 
     setTextures() {
@@ -540,7 +560,7 @@ export default class LastRave extends Scene {
 
     /** 0 = intro, 1..3 = objects found (see GameExperience.found), 4 = network reactivated (key T). */
     setSignalStage(count: number) {
-        if (count > 0 && !this.hud.isPowered) this.powerOn();
+        if (count > 0 && (!this.hud.isPowered || this.blackedOut)) this.powerOn();
         if (count === 0) this.game.resetFound();
         this.hud.setSignalOrder(this.game.found);
         this.hud.setSignalStage(count);
@@ -656,6 +676,7 @@ export default class LastRave extends Scene {
                 sound: this.soundParams,
             },
             this.arduinoState,
+            this.beforeTorches,
         );
         // Hidden for the show — H brings it back.
         pane.hidden = true;
@@ -757,6 +778,10 @@ export default class LastRave extends Scene {
     }
 
     powerOn() {
+        this.blackedOut = false;
+        this.torchesOffAt = Infinity;
+        this.torchOff.fill(false);
+        this.roomOff = false;
         if (this.screenPowerTarget !== 1) this.sound.play({ type: "screen-on" });
         this.screenPowerTarget = 1;
         this.postFx.kick(0.8);
@@ -778,6 +803,18 @@ export default class LastRave extends Scene {
         this.screenPowerTarget = 0;
         this.screenPower = 0;
         this.hud.setPowered(false);
+        this.globe.setPowered(false);
+        this.globeShown = false;
+    }
+
+    /** The screen dies after the end clip: music, pink glow, LEDs, torches' tint and accent light cut at once. */
+    blackout() {
+        this.blackedOut = true;
+        this.game.stopMusic();
+        this.sound.play({ type: "screen-off" });
+        this.torchesOffAt = this.experience.time.elapsed / 1000 + TORCHES_OFF.delay;
+        this.screenPowerTarget = 0;
+        this.screenPower = 0;
         this.globe.setPowered(false);
         this.globeShown = false;
     }
@@ -876,6 +913,14 @@ export default class LastRave extends Scene {
         this.torchesReadyAt = this.experience.time.elapsed / 1000;
     }
 
+    /** 0 before the torches, → 1 once the last one is on (follows the switch-on sequence). */
+    private torchesLit(now: number) {
+        const { switchOnDelay, switchOnStagger } = this.flashlightParams;
+        const start = this.torchesReadyAt + switchOnDelay;
+        const span = switchOnStagger * (this.flashlights.length - 1) + 0.25;
+        return THREE.MathUtils.smoothstep(now, start, start + span);
+    }
+
     /**
      * Torch `i` switch state (0..1): off until its turn, then a short bad-contact
      * stutter and on for good. Fires its click sound when it first lights.
@@ -894,7 +939,35 @@ export default class LastRave extends Scene {
         if (t < 0.11) return 0.05;
         if (t < 0.17) return 0.6;
         if (t < 0.22) return 0.1;
-        return 1;
+        return this.torchDying(i, now);
+    }
+
+    /** End of the show: the room light goes last, after every torch — then full dark. */
+    private roomDying(now: number) {
+        const last = (this.flashlights.length - 1) * TORCHES_OFF.stagger;
+        const t = now - this.torchesOffAt - last - TORCHES_OFF.roomAfter;
+        if (t < 0) return 1;
+        if (!this.roomOff) {
+            this.roomOff = true;
+            this.sound.play({ type: "lamp-on", index: 1, pan: 0 });
+        }
+        if (t < 0.05) return 0.2;
+        if (t < 0.1) return 0.8;
+        return 0;
+    }
+
+    /** End of the show: torch `i` clicks off on its turn, with a short dying flicker. */
+    private torchDying(i: number, now: number) {
+        const t = now - this.torchesOffAt - i * TORCHES_OFF.stagger;
+        if (t < 0) return 1;
+        if (!this.torchOff[i]) {
+            this.torchOff[i] = true;
+            const x = this.flashlights[i].position.x / (SCREEN_WIDTH / 2);
+            this.sound.play({ type: "lamp-on", index: i, pan: Math.max(-1, Math.min(1, x)) });
+        }
+        if (t < 0.05) return 0.15;
+        if (t < 0.1) return 0.7;
+        return 0;
     }
 
     updateScreenPower(dt: number) {
@@ -914,11 +987,12 @@ export default class LastRave extends Scene {
         // Torches are on from the start (people exploring before the screen wakes):
         // `idlePower` of their level + a neutral beam, ramping to full green with the screen.
         // Neon flicker only hits the screen-driven part — the hand-held beams stay steady.
-        const level = idlePower + (1 - idlePower) * this.screenPower * flicker;
-        const torch = screenGlow * share * level;
-        this._torchIdle.set(idleColor);
-        const t = (this.experience.time.elapsed / 1000) * 0.45;
         const now = this.experience.time.elapsed / 1000;
+        const level = idlePower + (1 - idlePower) * this.screenPower * flicker;
+        const glow = THREE.MathUtils.lerp(this.beforeTorches.screenGlow, screenGlow, this.torchesLit(now));
+        const torch = glow * share * level;
+        this._torchIdle.set(idleColor);
+        const t = now * 0.45;
         this.flashlights.forEach((light, i) => {
             const { power, phase } = FLASHLIGHT_SEEDS[i];
             const switchOn = this.torchSwitch(i, now);
@@ -930,7 +1004,7 @@ export default class LastRave extends Scene {
             light.intensity = torch * power * Math.max(0, 1 + drift * variation) * switchOn;
             light.color.lerpColors(this._torchIdle, this._torchLive, this.screenPower);
         });
-        this.roomLight.intensity = room * fill;
+        this.roomLight.intensity = room * fill * this.roomDying(now);
         this.syncCustomLights();
     }
 
@@ -951,8 +1025,15 @@ export default class LastRave extends Scene {
         // Off = out of the light list entirely (an intensity-0 light still costs per pixel).
         this.debugFill.visible = debug > 0;
         this.debugKey.visible = debug > 0;
-        const { enabled, intensity, ambientShare, color, dirX, dirY, dirZ } = this.greenLight;
-        const green = enabled ? intensity : 0;
+        const { enabled, color, dirX, dirY, dirZ } = this.greenLight;
+        const lit = this.torchesLit(this.experience.time.elapsed / 1000);
+        const intensity = THREE.MathUtils.lerp(this.beforeTorches.accentIntensity, this.greenLight.intensity, lit);
+        const ambientShare = THREE.MathUtils.lerp(
+            this.beforeTorches.accentAmbientShare,
+            this.greenLight.ambientShare,
+            lit,
+        );
+        const green = enabled && !this.blackedOut ? intensity : 0;
         this.greenFill.color.set(color);
         this.greenKey.color.set(color);
         // ×2 so 0.5 keeps both halves at `intensity`, like before the split.

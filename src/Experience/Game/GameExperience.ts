@@ -212,6 +212,15 @@ export class GameExperience {
         else if (this.phase === "idle") void this.begin();
     }
 
+    /** End of the show: music cut dead, back to idle (the next signal object restarts LOOP). */
+    stopMusic() {
+        this.engine.stopLevel();
+        this.pending = [];
+        this.phase = "idle";
+        this.starting = false;
+        this.dropRequested = false;
+    }
+
     update() {
         if (this.phase !== "loop") return;
 
@@ -316,6 +325,7 @@ export class GameExperience {
             windPoster: "/assets/sounds/wind-poster.mp3",
             paperRip: "/assets/sounds/paper-ripped.mp3",
             screenOn: "/assets/sounds/screen-turned-on.mp3",
+            screenOff: "/assets/sounds/TV-turn-off.mp3",
             glitchHard: "/assets/sounds/glitch2.mp3",
             addSignal: "/assets/sounds/add-signal.mp3",
             addSignal2: "/assets/sounds/add-signal2.mp3",
