@@ -13,9 +13,12 @@ import {
     PALETTE,
     SCREEN_HEIGHT,
     SCREEN_WIDTH,
+    setAccent,
+    type AccentName,
 } from "./layout";
 import { createCameraRig, DEFAULT_CAMERA_MOTION } from "./objects/cameraMotion";
 import { applySpecularAATo, specularAA } from "./objects/specularAA";
+import { setTexturesEnabled } from "./objects/textureToggle";
 import { createSoundDesign, DEFAULT_SOUND_DESIGN } from "./audio/soundDesign";
 import {
     createPostFx,
@@ -68,6 +71,14 @@ export type FlashlightParams = {
     share: number;
     /** How much each torch's power drifts over time (0 = steady). */
     variation: number;
+    /** Seconds after pressing L before the first torch clicks on. */
+    switchOnDelay: number;
+    /** Seconds between each torch switching on. */
+    switchOnStagger: number;
+    /** Torch level before the screen is on (fraction of the full level). */
+    idlePower: number;
+    /** Beam color before the screen is on (blends to green as it boots). */
+    idleColor: string;
 };
 
 export const DEFAULT_FLASHLIGHT_PARAMS: FlashlightParams = {
@@ -78,6 +89,10 @@ export const DEFAULT_FLASHLIGHT_PARAMS: FlashlightParams = {
     tremor: 0.03,
     share: 0.5,
     variation: 0.35,
+    switchOnDelay: 0.15,
+    switchOnStagger: 0.85,
+    idlePower: 0.6,
+    idleColor: "#d4e2da",
 };
 
 /**
@@ -220,12 +235,22 @@ export default class LastRave extends Scene {
     posterRoughnessMap: THREE.Texture | null = null;
     posterNormal = { enabled: true };
     screenRoughness = { enabled: true };
+    textures = { enabled: true };
+    accent = { pink: false };
+    screenOverlayMap: THREE.Texture | null = null;
     posterViewHeight = 1;
     cameraDistance = 0;
 
     screenPower = 0;
     screenPowerTarget = 0;
     powerOnTimer = 0;
+    /** When L was pressed (s) — torches click on in sequence after it. Off until then. */
+    private torchesReadyAt = Infinity;
+    private readonly torchSwitched = [false, false, false];
+    /** Pending poster take-off while the wind sound leads in. */
+    flyTimer = 0;
+    /** Previous frame's merge-glitch level (fires the drop glitch sound on the rising edge). */
+    private lastMergeGlitch = 0;
     globeShown = false;
 
     // Wind punch: snap right+down, then slow dazed ease back to center.
@@ -244,6 +269,8 @@ export default class LastRave extends Scene {
     private readonly _roomColor = new THREE.Color();
     private readonly _glowColor = new THREE.Color();
     private readonly _greenAmbient = new THREE.Color();
+    private readonly _torchIdle = new THREE.Color();
+    private readonly _torchLive = new THREE.Color(PALETTE.green);
 
     constructor() {
         super();
@@ -358,7 +385,7 @@ export default class LastRave extends Scene {
         this.debugKey = new THREE.DirectionalLight("#ffffff", 0);
         this.debugKey.position.set(0.5, 1, 5);
 
-        this.greenFill = new THREE.HemisphereLight(PALETTE.green, "#0a2414", 0);
+        this.greenFill = new THREE.HemisphereLight(PALETTE.green, PALETTE.greenShade, 0);
         this.greenKey = new THREE.DirectionalLight(PALETTE.green, 0);
 
         this.experience.camera.instance.layers.enable(GLOW_LAYER);
@@ -455,6 +482,7 @@ export default class LastRave extends Scene {
                 .screenOverlay as THREE.Texture;
             screenOverlay.colorSpace = THREE.SRGBColorSpace;
             screenOverlay.anisotropy = this.maxAnisotropy;
+            this.screenOverlayMap = screenOverlay;
             this.screen.setOverlay(screenOverlay);
 
             const screenRoughness = resources.items
@@ -469,8 +497,81 @@ export default class LastRave extends Scene {
         else resources.on("ready", apply);
     }
 
+    /** Poster gust → peel → fly off → screen boots (key A / debug button). */
+    flyPoster() {
+        if (this.poster.gone || this.poster.flying || this.flyTimer) return;
+        // The gust is heard first, the poster goes a beat later.
+        this.sound.play({ type: "poster-wind" });
+        this.flyTimer = window.setTimeout(() => {
+            this.flyTimer = 0;
+            if (this.poster.gone || this.poster.flying) return;
+            this.poster.fly();
+            // Paper rips as it peels off, just before it detaches (punch hit).
+            window.setTimeout(
+                () => this.sound.play({ type: "poster-rip" }),
+                Math.max(0.02, this.posterParams.windCamHit) * 500,
+            );
+            this.punch = { elapsed: 0 };
+            this.postFx.kick(1);
+            this.cameraRig.startle(1);
+            // Screen boots 200ms after the poster starts peeling off.
+            this.powerOnTimer = window.setTimeout(
+                () => this.powerOn(),
+                Math.max(0.02, this.posterParams.windCamHit) * 1000 + 200,
+            );
+        }, Math.max(0, this.posterParams.windSoundLead) * 1000);
+    }
+
+    /** 0 = intro, 1..3 = objects found, 4 = network reactivated (keys Z / E / R / T). */
+    setSignalStage(count: number) {
+        if (count > 0 && !this.hud.isPowered) this.powerOn();
+        this.hud.setSignalStage(count);
+        if (count > 0) {
+            this.postFx.kick(count >= 4 ? 1 : 0.6);
+            this.cameraRig.startle(count >= 4 ? 0.9 : 0.4);
+        }
+        // Music starts on first signal object, not on the base "fête" screen.
+        if (count >= 1) this.game.startLoop();
+        if (count >= 4) this.game.playDrop();
+    }
+
+    /**
+     * Show controls by typed character (AZERTY-safe): L torches, A poster, Z / E / R signals
+     * 1-3, T network reactivated (end). H toggles the hidden debug panel.
+     */
+    bindShowKeys(pane: { hidden: boolean }) {
+        window.addEventListener("keydown", (event) => {
+            if (event.repeat) return;
+            if (event.target instanceof HTMLInputElement) return;
+            if (event.target instanceof HTMLTextAreaElement) return;
+            switch (event.key.toLowerCase()) {
+                case "a":
+                    this.flyPoster();
+                    break;
+                case "z":
+                    this.setSignalStage(1);
+                    break;
+                case "e":
+                    this.setSignalStage(2);
+                    break;
+                case "r":
+                    this.setSignalStage(3);
+                    break;
+                case "t":
+                    this.setSignalStage(4);
+                    break;
+                case "l":
+                    this.switchOnTorches();
+                    break;
+                case "h":
+                    pane.hidden = !pane.hidden;
+                    break;
+            }
+        });
+    }
+
     setDebug() {
-        createDebugPanel(
+        const pane = createDebugPanel(
             this.hud,
             this.cameraMotion,
             this.posterParams,
@@ -480,36 +581,14 @@ export default class LastRave extends Scene {
                 onWallLightChange: () =>
                     applyWallLightParams(this.wall, this.wallLightParams),
                 onGlobeBoost: () => this.globe.triggerBoost(),
-                onPosterFly: () => {
-                    if (this.poster.gone || this.poster.flying) return;
-                    this.poster.fly();
-                    this.punch = { elapsed: 0 };
-                    this.postFx.kick(1);
-                    this.cameraRig.startle(1);
-                    // Screen boots 200ms after the poster starts peeling off.
-                    this.powerOnTimer = window.setTimeout(
-                        () => this.powerOn(),
-                        Math.max(0.02, this.posterParams.windCamHit) * 1000 +
-                            200,
-                    );
-                },
+                onPosterFly: () => this.flyPoster(),
                 onPosterReset: () => {
                     if (this.poster.gone) this.spawnPoster();
                     else this.poster.reset();
                     this.resetPunch();
                     this.powerOff();
                 },
-                onSignalStage: (count) => {
-                    if (count > 0 && !this.hud.isPowered) this.powerOn();
-                    this.hud.setSignalStage(count);
-                    if (count > 0) {
-                        this.postFx.kick(count >= 4 ? 1 : 0.6);
-                        this.cameraRig.startle(count >= 4 ? 0.9 : 0.4);
-                    }
-                    // Music starts on first signal object, not on the base "fête" screen.
-                    if (count >= 1) this.game.startLoop();
-                    if (count >= 4) this.game.playDrop();
-                },
+                onSignalStage: (count) => this.setSignalStage(count),
                 onPosterNormalToggle: (enabled) => {
                     this.posterNormal.enabled = enabled;
                     this.poster.setNormalEnabled(enabled);
@@ -518,9 +597,13 @@ export default class LastRave extends Scene {
                     this.screenRoughness.enabled = enabled;
                     this.screen.setRoughnessEnabled(enabled);
                 },
+                onTexturesToggle: (enabled) => this.setTexturesEnabled(enabled),
+                onAccentToggle: (pink) => this.setAccent(pink ? "pink" : "green"),
             },
             this.posterNormal,
             this.screenRoughness,
+            this.textures,
+            this.accent,
             this.flashlightParams,
             this.debugLight,
             this.greenLight,
@@ -536,9 +619,49 @@ export default class LastRave extends Scene {
                 sound: this.soundParams,
             },
         );
+        // Hidden for the show — H brings it back.
+        pane.hidden = true;
+        this.bindShowKeys(pane);
+    }
+
+    /** Debug: raw shading — every texture off except the live HUD on the screen. */
+    setTexturesEnabled(enabled: boolean) {
+        this.textures.enabled = enabled;
+        setTexturesEnabled(this.container, enabled, [this.hud.texture]);
+        this.screen.setOverlay(enabled ? this.screenOverlayMap : null);
+        if (enabled) {
+            this.applyPosterMap();
+        } else {
+            this.poster.setMap(null);
+            this.poster.setNormalMap(null);
+            this.poster.setRoughnessMap(null);
+        }
+    }
+
+    /** Debug: swap the whole accent (HUD, lights, LEDs, globe, glow strips). */
+    setAccent(name: AccentName) {
+        const from = new THREE.Color(PALETTE.green);
+        setAccent(name);
+        const to = new THREE.Color(PALETTE.green);
+        this.accent.pink = name === "pink";
+        this.greenLight.color = PALETTE.green;
+        this._torchLive.copy(to);
+        this.greenFill.groundColor.set(PALETTE.greenShade);
+        this.hud.syncAccent();
+        // Materials built from the old accent (glow strips, LEDs, globe lines).
+        this.experience.scene.traverse((obj) => {
+            const material = (obj as { material?: THREE.Material | THREE.Material[] }).material;
+            if (!material) return;
+            for (const m of Array.isArray(material) ? material : [material]) {
+                const tinted = m as THREE.Material & { color?: THREE.Color; emissive?: THREE.Color };
+                if (tinted.color?.equals(from)) tinted.color.copy(to);
+                if (tinted.emissive?.equals(from)) tinted.emissive.copy(to);
+            }
+        });
     }
 
     applyPosterMap() {
+        if (!this.textures.enabled) return;
         if (this.posterMap) this.poster.setMap(this.posterMap);
         if (this.posterNormalMap) this.poster.setNormalMap(this.posterNormalMap);
         this.poster.setNormalEnabled(this.posterNormal.enabled);
@@ -555,6 +678,7 @@ export default class LastRave extends Scene {
     }
 
     powerOn() {
+        if (this.screenPowerTarget !== 1) this.sound.play({ type: "screen-on" });
         this.screenPowerTarget = 1;
         this.postFx.kick(0.8);
         this.cameraRig.startle(0.6);
@@ -568,6 +692,8 @@ export default class LastRave extends Scene {
 
     powerOff() {
         window.clearTimeout(this.powerOnTimer);
+        window.clearTimeout(this.flyTimer);
+        this.flyTimer = 0;
         this.screenPowerTarget = 0;
         this.screenPower = 0;
         this.hud.setPowered(false);
@@ -603,6 +729,7 @@ export default class LastRave extends Scene {
         const dt = this.experience.time.delta / 1000;
 
         this.hud.setRhythmSongTime(this.game.songTime());
+        this.hud.setMusicLevel(this.game.audio.bassLevel);
         this.hud.update(dt);
         if (this.hud.showsGlobe !== this.globeShown) {
             this.globeShown = this.hud.showsGlobe;
@@ -614,7 +741,15 @@ export default class LastRave extends Scene {
         this.updateFlashlights(time);
         this.updateScreenPower(dt);
         // Post glitch rides the HUD tear while the traces fuse (drop).
-        this.postFx.setGlitchLevel(this.hud.mergeGlitch);
+        const merge = this.hud.mergeGlitch;
+        this.postFx.setGlitchLevel(merge);
+        if (merge > 0.05 && this.lastMergeGlitch <= 0.05) this.sound.play({ type: "merge-glitch" });
+        this.lastMergeGlitch = merge;
+        this.sound.updateBeds({
+            screenPower: this.screenPower,
+            flicker: this.lastFlicker,
+            musicPlaying: this.game.musicPlaying,
+        });
         this.environment.update(time, dt, {
             screenPower: this.screenPower,
             flicker: this.lastFlicker,
@@ -652,6 +787,33 @@ export default class LastRave extends Scene {
         });
     }
 
+    /** Start the torch switch-on sequence (key L). Once only. */
+    switchOnTorches() {
+        if (Number.isFinite(this.torchesReadyAt)) return;
+        this.torchesReadyAt = this.experience.time.elapsed / 1000;
+    }
+
+    /**
+     * Torch `i` switch state (0..1): off until its turn, then a short bad-contact
+     * stutter and on for good. Fires its click sound when it first lights.
+     */
+    private torchSwitch(i: number, now: number) {
+        const { switchOnDelay, switchOnStagger } = this.flashlightParams;
+        const t = now - this.torchesReadyAt - switchOnDelay - i * switchOnStagger;
+        if (t < 0) return 0;
+        if (!this.torchSwitched[i]) {
+            this.torchSwitched[i] = true;
+            const x = this.flashlights[i].position.x / (SCREEN_WIDTH / 2);
+            this.sound.play({ type: "lamp-on", index: i, pan: Math.max(-1, Math.min(1, x)) });
+        }
+        // ~0.25 s stutter: on / off / dim / on, like a loose battery contact.
+        if (t < 0.06) return 1;
+        if (t < 0.11) return 0.05;
+        if (t < 0.17) return 0.6;
+        if (t < 0.22) return 0.1;
+        return 1;
+    }
+
     updateScreenPower(dt: number) {
         this.screenPower +=
             (this.screenPowerTarget - this.screenPower) * Math.min(1, dt * 3);
@@ -665,17 +827,25 @@ export default class LastRave extends Scene {
         const fill = 1 - this.screenPower;
         this.ambientLight.intensity = ambient * (0.35 + 0.65 * fill);
         this.topLight.intensity = key * fill;
-        const { share, variation } = this.flashlightParams;
-        const torch = screenGlow * share * this.screenPower * flicker;
+        const { share, variation, idlePower, idleColor } = this.flashlightParams;
+        // Torches are on from the start (people exploring before the screen wakes):
+        // `idlePower` of their level + a neutral beam, ramping to full green with the screen.
+        // Neon flicker only hits the screen-driven part — the hand-held beams stay steady.
+        const level = idlePower + (1 - idlePower) * this.screenPower * flicker;
+        const torch = screenGlow * share * level;
+        this._torchIdle.set(idleColor);
         const t = (this.experience.time.elapsed / 1000) * 0.45;
+        const now = this.experience.time.elapsed / 1000;
         this.flashlights.forEach((light, i) => {
             const { power, phase } = FLASHLIGHT_SEEDS[i];
+            const switchOn = this.torchSwitch(i, now);
             // Slow uneven breathing in [-1, 1] — batteries / hand angle, never periodic-looking.
             const drift =
                 0.55 * Math.sin(t * 0.37 + phase * 3.1) +
                 0.3 * Math.sin(t * 0.91 + phase * 1.3) +
                 0.15 * Math.sin(t * 2.3 + phase * 5.7);
-            light.intensity = torch * power * Math.max(0, 1 + drift * variation);
+            light.intensity = torch * power * Math.max(0, 1 + drift * variation) * switchOn;
+            light.color.lerpColors(this._torchIdle, this._torchLive, this.screenPower);
         });
         this.roomLight.intensity = room * fill;
         this.syncCustomLights();

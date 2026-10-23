@@ -8,7 +8,7 @@ export default [
     {
         name: "posterTexture",
         type: "texture",
-        path: "/textures/texture-ripped-paper.png",
+        path: "/textures/poster-v2.png",
     },
     {
         name: "posterNormal",

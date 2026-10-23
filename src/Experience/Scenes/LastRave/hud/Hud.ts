@@ -24,6 +24,7 @@ export type HudSfx =
   | { type: 'network' }
   | { type: 'lock' }
   | { type: 'outro-in' }
+  | { type: 'outro-out' }
   | { type: 'outro-type' }
   | { type: 'outro-glitch' }
   | { type: 'text-glitch' }
@@ -277,6 +278,16 @@ export class Hud {
     this.signalScreen.setSongTime(songTime)
   }
 
+  /** Repaint the fluid meters in the live accent (after `setAccent`). */
+  syncAccent() {
+    for (const { params } of this.fluids.values()) params.color = PALETTE.green
+  }
+
+  /** Music low-end level (0..1) — the merged trace shakes on the kicks. */
+  setMusicLevel(bass: number) {
+    this.signalScreen.setMusicLevel(bass)
+  }
+
   /** Visual feedback: collapse the peak for a caught note. */
   registerRhythmHit(lane: number, noteTime: number, absSongTime: number) {
     this.signalScreen.registerHit(lane, noteTime, absSongTime)
@@ -359,6 +370,7 @@ export class Hud {
       const chars = OUTRO_LINES.join('').length
       const startAt = this.meterTime
       this.outroTypedCount = 0
+      this.outroOutCued = false
       this.onSfx?.({ type: 'outro-in' })
       this.outro = {
         startAt,
@@ -420,6 +432,7 @@ export class Hud {
   onSfx: ((cue: HudSfx) => void) | null = null
   private wasLocked = false
   private outroTypedCount = 0
+  private outroOutCued = false
 
   trigger(id: ModuleId) {
     this.onTrigger?.()
@@ -811,13 +824,13 @@ export class Hud {
     ctx.globalAlpha = pose.alpha
     // Soft pulse — slight brighten of the frames, then back to faint.
     ctx.strokeStyle =
-      pulse > 0.01 ? `rgba(34, 240, 143, ${0.18 + pulse * 0.12})` : PALETTE.greenFaint
+      pulse > 0.01 ? `rgba(${PALETTE.greenRgb}, ${0.18 + pulse * 0.12})` : PALETTE.greenFaint
     ctx.lineWidth = 0.6 + pulse * 0.1
     ctx.strokeRect(pose.x, pose.y, pose.w, pose.h)
 
     // Ghost packet — offset duplicate while materializing.
     if (Math.abs(pose.glitch) > 0.4 && pose.t < 0.92) {
-      ctx.strokeStyle = 'rgba(34, 240, 143, 0.12)'
+      ctx.strokeStyle = `rgba(${PALETTE.greenRgb}, 0.12)`
       ctx.strokeRect(pose.x + pose.glitch, pose.y - pose.glitch * 0.4, pose.w, pose.h)
     }
 
@@ -1035,7 +1048,7 @@ export class Hud {
     ctx.clip()
 
     // Faint perspective frame + diagonals (radar grid).
-    ctx.strokeStyle = 'rgba(34, 240, 143, 0.18)'
+    ctx.strokeStyle = `rgba(${PALETTE.greenRgb}, 0.18)`
     ctx.lineWidth = 0.5
     ctx.beginPath()
     ctx.moveTo(x + 4, y + 4)
@@ -1069,7 +1082,7 @@ export class Hud {
 
       const size = 0.6 + (1 - depth) * 0.5 + boost * 0.4
       const alpha = 0.25 + depth * 0.65
-      ctx.fillStyle = `rgba(34, 240, 143, ${alpha})`
+      ctx.fillStyle = `rgba(${PALETTE.greenRgb}, ${alpha})`
       ctx.fillRect(px - size / 2, py - size / 2, size, size)
     }
 
@@ -1082,7 +1095,7 @@ export class Hud {
         const py = cy + (gy / z) * (half * 0.28)
         if (px < x + 2 || px > x + w - 2 || py < y + 2 || py > y + h - 2) continue
         const alpha = 0.2 + (1 - z / 1.2) * 0.55
-        ctx.fillStyle = `rgba(34, 240, 143, ${alpha})`
+        ctx.fillStyle = `rgba(${PALETTE.greenRgb}, ${alpha})`
         ctx.fillRect(px - 0.45, py - 0.45, 0.9, 0.9)
       }
     }
@@ -1139,7 +1152,7 @@ export class Hud {
         py = y + h + margin
       }
 
-      ctx.strokeStyle = `rgba(34, 240, 143, ${0.22 + (s % 5) * 0.08 + boost * 0.2})`
+      ctx.strokeStyle = `rgba(${PALETTE.greenRgb}, ${0.22 + (s % 5) * 0.08 + boost * 0.2})`
       ctx.beginPath()
       ctx.moveTo(px, py)
 
@@ -1188,7 +1201,7 @@ export class Hud {
     ctx.rect(x + 0.5, y + 0.5, w - 1, h - 1)
     ctx.clip()
 
-    ctx.strokeStyle = `rgba(34, 240, 143, ${0.75 + boost * 0.25})`
+    ctx.strokeStyle = `rgba(${PALETTE.greenRgb}, ${0.75 + boost * 0.25})`
     ctx.lineWidth = 0.7
     ctx.beginPath()
     for (let i = 0; i < rays; i++) {
@@ -1289,7 +1302,7 @@ export class Hud {
         break
     }
 
-    ctx.strokeStyle = `rgba(34, 240, 143, ${0.35 + intensity * 0.65})`
+    ctx.strokeStyle = `rgba(${PALETTE.greenRgb}, ${0.35 + intensity * 0.65})`
     ctx.lineWidth = 1.2
     ctx.strokeRect(x + 0.5, y + 0.5, w - 1, h - 1)
     ctx.restore()
@@ -1298,9 +1311,9 @@ export class Hud {
   private animPulse(x: number, y: number, w: number, h: number, progress: number, intensity: number) {
     const { ctx } = this
     const wave = 0.5 + 0.5 * Math.sin(progress * Math.PI * 4)
-    ctx.fillStyle = `rgba(34, 240, 143, ${wave * 0.35 * intensity})`
+    ctx.fillStyle = `rgba(${PALETTE.greenRgb}, ${wave * 0.35 * intensity})`
     ctx.fillRect(x, y, w, h)
-    ctx.strokeStyle = `rgba(34, 240, 143, ${intensity})`
+    ctx.strokeStyle = `rgba(${PALETTE.greenRgb}, ${intensity})`
     ctx.lineWidth = 1.5
     const inset = 3 + wave * 4
     ctx.strokeRect(x + inset, y + inset, w - inset * 2, h - inset * 2)
@@ -1316,10 +1329,10 @@ export class Hud {
       const cx = x + (i % cells) * cellW
       const cy = y + Math.floor(i / cells) * cellH
       if (i <= lit) {
-        ctx.fillStyle = `rgba(34, 240, 143, ${0.25 * intensity})`
+        ctx.fillStyle = `rgba(${PALETTE.greenRgb}, ${0.25 * intensity})`
         ctx.fillRect(cx + 1, cy + 1, cellW - 2, cellH - 2)
       }
-      ctx.strokeStyle = `rgba(34, 240, 143, ${0.3 * intensity})`
+      ctx.strokeStyle = `rgba(${PALETTE.greenRgb}, ${0.3 * intensity})`
       ctx.strokeRect(cx + 0.5, cy + 0.5, cellW - 1, cellH - 1)
     }
   }
@@ -1335,7 +1348,7 @@ export class Hud {
         const n = Math.sin((col + 1) * 12.9898 + (row + 1) * 78.233 + progress * 40) * 43758.5453
         const v = n - Math.floor(n)
         if (v > 0.55) {
-          ctx.fillStyle = `rgba(34, 240, 143, ${v * 0.55 * intensity})`
+          ctx.fillStyle = `rgba(${PALETTE.greenRgb}, ${v * 0.55 * intensity})`
           ctx.fillRect(x + col * cellW, y + row * cellH, cellW, cellH)
         }
       }
@@ -1347,7 +1360,7 @@ export class Hud {
     const cx = x + w / 2
     const cy = y + h / 2
     const rays = 10
-    ctx.strokeStyle = `rgba(34, 240, 143, ${intensity})`
+    ctx.strokeStyle = `rgba(${PALETTE.greenRgb}, ${intensity})`
     ctx.lineWidth = 1
     for (let i = 0; i < rays; i++) {
       const angle = (i / rays) * Math.PI * 2 + progress * 3
@@ -1374,6 +1387,10 @@ export class Hud {
     const toEnd = outro.endAt - this.meterTime
     const glitchIn = t < OUTRO_GLITCH_IN ? 1 - t / OUTRO_GLITCH_IN : 0
     const glitchOut = toEnd < OUTRO_GLITCH_OUT ? 1 - toEnd / OUTRO_GLITCH_OUT : 0
+    if (glitchOut > 0 && !this.outroOutCued) {
+      this.outroOutCued = true
+      this.onSfx?.({ type: 'outro-out' })
+    }
     // Rare twitch during the hold so it never feels frozen.
     const twitch = Math.random() < 0.04 ? 0.35 : 0
     const glitch = Math.max(glitchIn, glitchOut, twitch)
@@ -1385,7 +1402,7 @@ export class Hud {
 
     // Dark panel behind the title.
     const panel = OUTRO_PANEL
-    ctx.fillStyle = 'rgba(34, 240, 143, 0.035)'
+    ctx.fillStyle = `rgba(${PALETTE.greenRgb}, 0.035)`
     ctx.beginPath()
     ctx.roundRect(panel.x, panel.y, panel.w, panel.h, 8)
     ctx.fill()
@@ -1454,7 +1471,7 @@ export class Hud {
         ctx.shadowBlur = 0
         ctx.fillStyle = `rgba(255, 255, 255, ${0.35 * glitch})`
         ctx.fillText(shown, cx + jitter + dx, y)
-        ctx.fillStyle = `rgba(34, 240, 143, ${0.5 * glitch})`
+        ctx.fillStyle = `rgba(${PALETTE.greenRgb}, ${0.5 * glitch})`
         ctx.fillText(shown, cx + jitter - dx, y + 1)
       }
 
@@ -1544,7 +1561,7 @@ export class Hud {
       const dx = (Math.random() - 0.5) * 2 * 36 * level * this.scale
       ctx.drawImage(canvas, 0, y, canvas.width, h, dx, y, canvas.width, h)
       if (Math.random() < 0.4) {
-        ctx.fillStyle = `rgba(34, 240, 143, ${0.08 + Math.random() * 0.12 * level})`
+        ctx.fillStyle = `rgba(${PALETTE.greenRgb}, ${0.08 + Math.random() * 0.12 * level})`
         ctx.fillRect(0, y, canvas.width, Math.max(1, h * 0.15))
       }
     }
@@ -1557,7 +1574,7 @@ export class Hud {
     const { ctx } = this
     ctx.save()
     ctx.globalCompositeOperation = 'lighter'
-    ctx.fillStyle = `rgba(34, 240, 143, ${0.45 * level})`
+    ctx.fillStyle = `rgba(${PALETTE.greenRgb}, ${0.45 * level})`
     ctx.fillRect(0, 0, DESIGN.width, DESIGN.height)
     ctx.restore()
   }
@@ -1579,7 +1596,7 @@ export class Hud {
       const cy = CHROME_BAR.y + CHROME_BAR.h / 2
       ;[39, 47, 55].forEach((x, i) => {
         const lit = this.statusDots[i]?.lit ?? true
-        ctx.fillStyle = lit ? PALETTE.green : 'rgba(34, 240, 143, 0.12)'
+        ctx.fillStyle = lit ? PALETTE.green : `rgba(${PALETTE.greenRgb}, 0.12)`
         ctx.beginPath()
         ctx.arc(x, cy, 2.2, 0, Math.PI * 2)
         ctx.fill()
@@ -1589,7 +1606,7 @@ export class Hud {
       this.line(CHROME_SPLIT_X, CHROME_BAR.y, CHROME_SPLIT_X, CHROME_BAR.y + CHROME_BAR.h, PALETTE.greenFaint)
       this.text('NODE_004', CHROME_SPLIT_X + 8, cy + 2, 5.5, PALETTE.greenDim)
       this.text('LIVE', 784, cy + 2, 5.5, PALETTE.green)
-      ctx.fillStyle = this.recLit ? PALETTE.green : 'rgba(34, 240, 143, 0.12)'
+      ctx.fillStyle = this.recLit ? PALETTE.green : `rgba(${PALETTE.greenRgb}, 0.12)`
       ctx.beginPath()
       ctx.arc(806, cy, 2.2, 0, Math.PI * 2)
       ctx.fill()
@@ -1734,7 +1751,7 @@ export class Hud {
       if (fillW <= 0) return
       for (let row = 0; row < h; row++) {
         const shade = row % 2 === 0 ? 1 : 0.5
-        ctx.fillStyle = `rgba(34, 240, 143, ${shade})`
+        ctx.fillStyle = `rgba(${PALETTE.greenRgb}, ${shade})`
         ctx.fillRect(x, y - 0.5 + row, fillW, 1)
       }
     })
