@@ -9,11 +9,11 @@ const LANES = [
     { sample: "pad" },
 ] as const;
 /** La corne joue l'arpège (lane) quand on souffle, en plus de la touche D. */
-const HORN_LANE = 0;
+export const HORN_LANE = 0;
 /** Le sablier joue le kick (drum lane), en plus de la touche F. */
-const HOURGLASS_LANE = 1;
+export const HOURGLASS_LANE = 1;
 /** L'étoile joue le pad / fréquence (lane) en s'ouvrant, en plus de la touche J. La cacher ne fait qu'armer. */
-const STAR_LANE = 2;
+export const STAR_LANE = 2;
 
 /** |hit - note| under this (seconds) counts. Early hits are scheduled on the note. */
 const HIT_WINDOW = 0.12;
@@ -77,8 +77,11 @@ export class GameExperience {
     private chart: ChartData | null = null;
     private pending: PendingNote[] = [];
     private phase: Phase = "idle";
-    /** Only lanes whose trace is revealed (one per found object) are judged. */
-    private activeLanes = 0;
+    /**
+     * Objects found, in the order they were found (any order). The first interaction with an
+     * object finds it and isn't judged; only found lanes are judged afterwards.
+     */
+    private readonly foundLanes = new Set<number>();
     private judgments: boolean[] = [];
     private gaugePoints = 0;
     private gaugePeak = 0;
@@ -92,6 +95,9 @@ export class GameExperience {
     private onHit:
         | ((lane: number, noteTime: number, absSongTime: number) => void)
         | null = null;
+    private onFound: ((lane: number) => void) | null = null;
+    /** Objects can only be found once the scene allows it (poster gone, see LastRave). */
+    canFind: () => boolean = () => true;
 
     constructor() {
         // Notes en attente assez tôt pour accepter un hit en avance sur la plus large fenêtre.
@@ -136,6 +142,11 @@ export class GameExperience {
         this.onHit = callback;
     }
 
+    /** Fired when an object is found (its first interaction, or a show key). */
+    whenFound(callback: (lane: number) => void) {
+        this.onFound = callback;
+    }
+
     /**
      * Start LOOP when signal object 1 is found — not on the base "fête" HUD.
      * Safe to call repeatedly; no-ops once music has started.
@@ -161,17 +172,37 @@ export class GameExperience {
         return (hits / this.judgments.length) * 100;
     }
 
-    /** Number of playable lanes (= signal objects found, max 3). */
-    setActiveLanes(count: number) {
-        const lanes = Math.max(0, Math.min(LANES.length, count));
-        // New lane = new game: accuracy only reflects play with the current lanes.
-        if (lanes !== this.activeLanes) {
-            this.judgments = [];
-            this.gaugePoints = 0;
-            this.gaugePeak = 0;
-            this.gaugeStart = this.audio.currentTime;
-        }
-        this.activeLanes = lanes;
+    /** Lanes whose object is found, in the order they were found. */
+    get found(): readonly number[] {
+        return [...this.foundLanes];
+    }
+
+    /** Marks an object as found (no-op if it already is). */
+    markFound(lane: number) {
+        if (lane < 0 || lane >= LANES.length || this.foundLanes.has(lane)) return;
+        if (!this.canFind()) return;
+        this.foundLanes.add(lane);
+        this.resetScore();
+        this.onFound?.(lane);
+    }
+
+    /** Back to the intro screen: every object has to be found again. */
+    resetFound() {
+        if (this.foundLanes.size === 0) return;
+        this.foundLanes.clear();
+        this.resetScore();
+    }
+
+    private get allFound() {
+        return this.foundLanes.size === LANES.length;
+    }
+
+    /** New lane = new game: accuracy only reflects play with the current lanes. */
+    private resetScore() {
+        this.judgments = [];
+        this.gaugePoints = 0;
+        this.gaugePeak = 0;
+        this.gaugeStart = this.audio.currentTime;
     }
 
     /** Debug stand-in for signal validation: LOOP gives way to the looping DROP. */
@@ -189,13 +220,13 @@ export class GameExperience {
             if (note.hit) return false;
             // Garde la note le temps qu'un hit compensé (capteur) puisse encore l'atteindre.
             if (now <= note.at + hitWindow(note.lane) + Math.max(STAR_LATENCY, HORN_LATENCY)) return true;
-            if (note.lane < this.activeLanes) this.judge(false);
+            if (this.foundLanes.has(note.lane)) this.judge(false);
             return false;
         });
     }
 
     private judge(hit: boolean) {
-        if (!hit && this.activeLanes === LANES.length) {
+        if (!hit && this.allFound) {
             const elapsed = this.audio.currentTime - this.gaugeStart;
             const penalty = MISS_PENALTY * Math.max(0, 1 - elapsed / MISS_FADE);
             this.gaugePoints = Math.max(
@@ -237,7 +268,7 @@ export class GameExperience {
             console.log(
                 `%c[${label}] IGNORÉ`,
                 "color:#ff5d63;font-weight:bold",
-                `| ${result.reason} (phase=${this.phase}, lanes=${this.activeLanes}/3)`,
+                `| ${result.reason} (phase=${this.phase}, trouvés=${this.foundLanes.size}/3)`,
             );
             return;
         }
@@ -355,31 +386,24 @@ export class GameExperience {
     private onLane(lane: number, latency = 0) {
         const songTime =
             this.phase === "idle" ? 0 : this.audio.currentTime - this.engine.startTime;
+        const ignored = (reason: string) => ({
+            ignored: true as const,
+            reason,
+            success: false,
+            distanceMs: 0,
+            deltaMs: 0,
+            nearestMs: null as number | null,
+            songTime,
+            noteTime: 0,
+        });
 
-        if (this.phase !== "loop") {
-            return {
-                ignored: true as const,
-                reason: "musique pas en loop",
-                success: false,
-                distanceMs: 0,
-                deltaMs: 0,
-                nearestMs: null as number | null,
-                songTime,
-                noteTime: 0,
-            };
+        // First interaction with an object finds it — not judged. Not after the final.
+        if (!this.foundLanes.has(lane) && this.phase !== "drop") {
+            if (!this.canFind()) return ignored("affiche encore en place");
+            this.markFound(lane);
+            return ignored("objet trouvé (pas jugé)");
         }
-        if (lane >= this.activeLanes) {
-            return {
-                ignored: true as const,
-                reason: `lane ${lane} inactive (il faut Objet ${lane + 1})`,
-                success: false,
-                distanceMs: 0,
-                deltaMs: 0,
-                nearestMs: null as number | null,
-                songTime,
-                noteTime: 0,
-            };
-        }
+        if (this.phase !== "loop") return ignored("musique pas en loop");
 
         const now = this.audio.currentTime - latency;
         let best: PendingNote | null = null;
@@ -414,7 +438,7 @@ export class GameExperience {
         }
 
         best.hit = true;
-        if (this.activeLanes === LANES.length) {
+        if (this.allFound) {
             this.gaugePoints += GAUGE_POINTS[lane] ?? 1;
             this.gaugePeak = Math.max(this.gaugePeak, this.gaugePoints);
         }

@@ -226,6 +226,7 @@ export function createDebugPanel(
     onGlobeBoost: () => void
     onPosterFly: () => void
     onPosterReset: () => void
+    onObjectFound: (lane: number) => void
     onSignalStage: (count: number) => void
     onWallLightChange: () => void
     onPosterNormalToggle: (enabled: boolean) => void
@@ -279,10 +280,8 @@ export function createDebugPanel(
   fisheye.addBinding(postFx.params.fisheye, 'strength', { min: 0, max: 1.5, step: 0.01, label: 'Force' })
 
   const signal = pane.addFolder({ title: 'Écran 2 — Signal', expanded: true })
-  for (const count of [1, 2, 3]) {
-    signal
-      .addButton({ title: `Objet ${count} trouvé (${count}/3)` })
-      .on('click', () => actions.onSignalStage(count))
+  for (const [lane, title] of ['Corne trouvée', 'Sablier trouvé', 'Étoile trouvée'].entries()) {
+    signal.addButton({ title }).on('click', () => actions.onObjectFound(lane))
   }
   signal.addButton({ title: 'Réseau réactivé (final)' }).on('click', () => actions.onSignalStage(4))
   signal.addButton({ title: 'Retour écran 1' }).on('click', () => actions.onSignalStage(0))

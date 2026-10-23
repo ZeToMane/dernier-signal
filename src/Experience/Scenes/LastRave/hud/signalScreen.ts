@@ -361,6 +361,8 @@ const peakAt = (
 /** Second HUD screen: three signal traces unlocked one by one as objects are found. */
 export class SignalScreen {
   private found = 0
+  /** Trace revealed by each found object, in the order they were found (then the others). */
+  private readonly order = [0, 1, 2]
   private readonly revealAt = [Infinity, Infinity, Infinity]
   /** Live baseline Y per trace — lerps toward an even split of the graph. */
   private readonly laneY = [MERGED_Y, MERGED_Y, MERGED_Y]
@@ -460,6 +462,18 @@ export class SignalScreen {
     return damp
   }
 
+  /** Objects found so far, in the order they were found (any order). */
+  setOrder(lanes: readonly number[]) {
+    const found = lanes.slice(0, 3)
+    const rest = [0, 1, 2].filter((i) => !found.includes(i))
+    this.order.splice(0, 3, ...found, ...rest)
+  }
+
+  /** Revealed traces, top to bottom by lane (corne, sablier, étoile) whatever the order found. */
+  private revealedLanes() {
+    return this.order.slice(0, this.found).sort((a, b) => a - b)
+  }
+
   get count() {
     return this.raveAt === null ? this.found : 4
   }
@@ -541,11 +555,12 @@ export class SignalScreen {
     if (n > prev) {
       for (let i = 0; i < 3; i++) this.laneFrom[i] = this.laneY[i]!
     }
-    for (let i = 0; i < 3; i++) {
-      if (i >= n) {
+    for (let k = 0; k < 3; k++) {
+      const i = this.order[k]!
+      if (k >= n) {
         this.revealAt[i] = Infinity
       } else if (this.revealAt[i] === Infinity) {
-        const at = now + (i === 0 ? firstDelay : 0)
+        const at = now + (k === 0 ? firstDelay : 0)
         this.revealAt[i] = at
         // New trace starts mid-graph, then springs onto its lane with the others.
         this.laneFrom[i] = MERGED_Y
@@ -623,16 +638,16 @@ export class SignalScreen {
       const acqT = this.acquireTime(now)
       if (acqT >= 0 && acqT < ACQUIRE.spring) {
         const u = easeOutBack(clamp01(acqT / ACQUIRE.spring))
-        for (let i = 0; i < this.found; i++) {
-          const to = laneTarget(i, this.found)
+        this.revealedLanes().forEach((i, slot) => {
+          const to = laneTarget(slot, this.found)
           this.laneY[i] = this.laneFrom[i]! + (to - this.laneFrom[i]!) * u
-        }
+        })
       } else {
         const k = Math.min(1, dt * LANE_LERP)
-        for (let i = 0; i < this.found; i++) {
-          const target = laneTarget(i, this.found)
+        this.revealedLanes().forEach((i, slot) => {
+          const target = laneTarget(slot, this.found)
           this.laneY[i] = this.laneY[i]! + (target - this.laneY[i]!) * k
-        }
+        })
       }
     }
   }
@@ -1055,10 +1070,12 @@ export class SignalScreen {
     const { ctx } = p
     const count = 1 + Math.floor(Math.random() * (2 + 4 * level))
     const newColor = CURVES[this.acquireIndex]?.color
+    const revealed = this.revealedLanes()
     ctx.save()
     ctx.lineWidth = 0.6
     for (let i = 0; i < count; i++) {
-      const lane = this.laneY[Math.floor(Math.random() * this.found)] ?? MERGED_Y
+      const pick = revealed[Math.floor(Math.random() * revealed.length)]
+      const lane = (pick === undefined ? undefined : this.laneY[pick]) ?? MERGED_Y
       const y = lane + (Math.random() - 0.5) * (36 + level * 20)
       const x = GRAPH.x + Math.random() * (GRAPH.w - 60)
       const w = 12 + Math.random() * (50 + level * 40)
