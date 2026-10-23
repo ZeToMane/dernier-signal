@@ -533,6 +533,7 @@ export default class LastRave extends Scene {
     setSignalStage(count: number) {
         if (count > 0 && !this.hud.isPowered) this.powerOn();
         this.hud.setSignalStage(count);
+        this.game.setActiveLanes(Math.min(3, count));
         if (count > 0) {
             this.postFx.kick(count >= 4 ? 1 : 0.6);
             this.cameraRig.startle(count >= 4 ? 0.9 : 0.4);
@@ -716,16 +717,6 @@ export default class LastRave extends Scene {
         arduino.star.on("hit", syncStar);
         arduino.star.on("cover", syncStar);
         arduino.star.on("uncover", syncStar);
-    }
-
-    /** 0 = intro, 1..3 = objects found, 4 = network reactivated (final). */
-    setSignalStage(count: number) {
-        if (count > 0 && !this.hud.isPowered) this.powerOn();
-        this.hud.setSignalStage(count);
-        this.game.setActiveLanes(Math.min(3, count));
-        // Music starts on first signal object, not on the base "fête" screen.
-        if (count >= 1) this.game.startLoop();
-        if (count >= 4) this.game.playDrop();
     }
 
     /**

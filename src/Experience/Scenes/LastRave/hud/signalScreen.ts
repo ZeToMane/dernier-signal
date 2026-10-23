@@ -417,6 +417,8 @@ export class SignalScreen {
 
   setMusicLevel(bass: number) {
     this.bass = bass
+  }
+
   /** Real rhythm accuracy (0–100), the target to hold, and 0..1 hold progress. */
   setAccuracy(value: number, threshold: number, hold: number) {
     this.accuracyTarget = Math.max(0, Math.min(100, value))
@@ -612,12 +614,6 @@ export class SignalScreen {
       const hit = this.hitDamps[i]!
       hit.damp = Math.max(0.05, hit.damp - dt * 10)
       if (song > hit.absAt + clearAfter) this.hitDamps.splice(i, 1)
-    }
-
-    this.accuracyRetargetIn -= dt
-    if (this.accuracyRetargetIn <= 0) {
-      this.accuracyTarget = ACCURACY_MIN + Math.random() * (ACCURACY_MAX - ACCURACY_MIN)
-      this.accuracyRetargetIn = 0.35 + Math.random() * 0.9
     }
 
     this.accuracy += (this.accuracyTarget - this.accuracy) * Math.min(1, dt * ACCURACY_LERP)
