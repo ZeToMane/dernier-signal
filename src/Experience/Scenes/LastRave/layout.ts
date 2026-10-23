@@ -8,8 +8,8 @@ export const GLOBE = { x: 710, y: 190, radius: 80 }
 
 /** Accent variants — `green` is the default bunker look, `pink` the alternate. */
 export const ACCENTS = {
-  green: { main: '#22f08f', rgb: '34, 240, 143', lane: '#2fe0a0', core: '#e6fff2', shade: '#0a2414' },
-  pink: { main: '#ff59bb', rgb: '255, 89, 187', lane: '#ff8fd2', core: '#ffeaf6', shade: '#24081a' },
+  green: { main: '#22f08f', rgb: '34, 240, 143', core: '#e6fff2', text: '#74f0a4', shade: '#0a2414' },
+  pink: { main: '#ff59bb', rgb: '255, 89, 187', core: '#ffeaf6', text: '#ff9ad4', shade: '#24081a' },
 }
 
 export type AccentName = keyof typeof ACCENTS
@@ -19,8 +19,9 @@ export const PALETTE = {
   background: '#020806',
   green: ACCENTS.green.main,
   greenRgb: ACCENTS.green.rgb,
-  greenLane: ACCENTS.green.lane,
   greenCore: ACCENTS.green.core,
+  /** Big outro title fill — a lighter tint of the accent. */
+  greenText: ACCENTS.green.text,
   greenShade: ACCENTS.green.shade,
   greenDim: `rgba(${ACCENTS.green.rgb}, 0.45)`,
   greenFaint: `rgba(${ACCENTS.green.rgb}, 0.18)`,
@@ -30,8 +31,8 @@ export function setAccent(name: AccentName) {
   const accent = ACCENTS[name]
   PALETTE.green = accent.main
   PALETTE.greenRgb = accent.rgb
-  PALETTE.greenLane = accent.lane
   PALETTE.greenCore = accent.core
+  PALETTE.greenText = accent.text
   PALETTE.greenShade = accent.shade
   PALETTE.greenDim = `rgba(${accent.rgb}, 0.45)`
   PALETTE.greenFaint = `rgba(${accent.rgb}, 0.18)`

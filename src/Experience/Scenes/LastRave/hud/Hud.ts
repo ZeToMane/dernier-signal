@@ -33,6 +33,10 @@ export type HudSfx =
 const OUTRO_HOLD = 4
 const OUTRO_LINES = ["LA FÊTE N'EST PAS", 'MORTE.']
 const OUTRO_LABEL = '> SIGNAL RÉTABLI'
+/** Played on the end screen, right after the outro title. */
+const END_VIDEO_SRC = '/assets/videos/video.mp4'
+/** Old-CRT switch-off after the end clip (s): squash to a line → shrink to a dot → fade. */
+const SHUTDOWN = { squash: 0.14, line: 0.16, dot: 0.4 }
 /** Outro card layout (design px): dark panel behind the title + label strip above. */
 const OUTRO_PANEL = { x: 57, y: 163, w: 713, h: 142 }
 const OUTRO_LABEL_BOX = { x: 86, y: 123, w: 92, h: 21 }
@@ -209,6 +213,15 @@ export class Hud {
   private pendingSwitch: { screen: HudScreen; count: number; at: number } | null = null
   /** Big centered title after the signal screen tears down — then black. */
   private outro: { startAt: number; endAt: number } | null = null
+  /** End-screen clip, drawn into the HUD canvas (scanlines + vignette on top). */
+  private readonly endVideo = Object.assign(document.createElement('video'), {
+    src: END_VIDEO_SRC,
+    preload: 'auto',
+    playsInline: true,
+    onended: () => this.startShutdown(),
+  })
+  /** CRT switch-off: start time + the last frame it collapses. */
+  private shutdown: { startAt: number; frame: HTMLCanvasElement } | null = null
   private outroGlitches: OutroGlitch[] = []
   /** Next sporadic burst during the outro hold. */
   private outroBurstAt = 0
@@ -313,6 +326,8 @@ export class Hud {
 
     // Leaving the outro / black end: full reboot, chrome included.
     if (this.screen === 'outro' || this.screen === 'end' || this.pendingSwitch?.screen === 'outro') {
+      this.endVideo.pause()
+      this.shutdown = null
       this.pendingSwitch = null
       this.outro = null
       this.signalScreen.setFound(0, this.meterTime)
@@ -438,6 +453,9 @@ export class Hud {
 
   /** Fired on every module / layout glitch — post FX hooks its spikes here. */
   onTrigger: (() => void) | null = null
+
+  /** The end clip is over and the screen dies — scene lights cut with it. */
+  onShutdown: (() => void) | null = null
   /** Sound-design cues (appearances, typing, signals, outro). */
   onSfx: ((cue: HudSfx) => void) | null = null
   private wasLocked = false
@@ -531,6 +549,7 @@ export class Hud {
     if (this.screen === 'outro' && this.outro && this.meterTime >= this.outro.endAt) {
       this.screen = 'end'
       this.outro = null
+      this.playEndVideo()
     }
 
     this.advanceMotion(dt)
@@ -962,8 +981,14 @@ export class Hud {
     ctx.fillStyle = PALETTE.background
     ctx.fillRect(0, 0, DESIGN.width, DESIGN.height)
 
-    // Final screen — black for now.
+    // Final screen — the end clip, cover-fitted to the HUD.
     if (this.screen === 'end') {
+      if (this.shutdown) {
+        this.drawShutdown(this.shutdown)
+      } else {
+        this.drawEndVideo()
+        this.drawScanlines()
+      }
       this.texture.needsUpdate = true
       return
     }
@@ -996,6 +1021,78 @@ export class Hud {
     this.drawScanlines()
 
     this.texture.needsUpdate = true
+  }
+
+  /** Start the end clip from the top — with sound, muted if the browser refuses. */
+  private playEndVideo() {
+    const video = this.endVideo
+    this.shutdown = null
+    video.currentTime = 0
+    video.muted = false
+    video.play().catch(() => {
+      video.muted = true
+      void video.play()
+    })
+  }
+
+  private drawEndVideo() {
+    const video = this.endVideo
+    if (video.readyState < HTMLMediaElement.HAVE_CURRENT_DATA) return
+    const scale = Math.max(DESIGN.width / video.videoWidth, DESIGN.height / video.videoHeight)
+    const w = video.videoWidth * scale
+    const h = video.videoHeight * scale
+    this.ctx.drawImage(video, (DESIGN.width - w) / 2, (DESIGN.height - h) / 2, w, h)
+  }
+
+  /** End clip finished — freeze its last frame and switch the screen off like an old CRT. */
+  private startShutdown() {
+    if (this.screen !== 'end' || this.shutdown) return
+    const frame = document.createElement('canvas')
+    frame.width = this.canvas.width
+    frame.height = this.canvas.height
+    frame.getContext('2d')?.drawImage(this.canvas, 0, 0)
+    this.shutdown = { startAt: this.meterTime, frame }
+    this.onShutdown?.()
+  }
+
+  private drawShutdown({ startAt, frame }: { startAt: number; frame: HTMLCanvasElement }) {
+    const { ctx, canvas } = this
+    const W = canvas.width
+    const H = canvas.height
+    const t = this.meterTime - startAt
+    const lineEnd = SHUTDOWN.squash + SHUTDOWN.line
+    ctx.save()
+    ctx.setTransform(1, 0, 0, 1, 0, 0)
+    ctx.fillStyle = '#000'
+    ctx.fillRect(0, 0, W, H)
+    ctx.shadowColor = PALETTE.green
+
+    if (t < SHUTDOWN.squash) {
+      // Picture squashed vertically into a bright band.
+      const u = t / SHUTDOWN.squash
+      const h = Math.max(2, H * (1 - u * u))
+      ctx.drawImage(frame, 0, (H - h) / 2, W, h)
+      ctx.fillStyle = `rgba(255, 255, 255, ${u * 0.75})`
+      ctx.fillRect(0, (H - h) / 2, W, h)
+    } else if (t < lineEnd) {
+      // White line pulls in to the center.
+      const u = (t - SHUTDOWN.squash) / SHUTDOWN.line
+      const w = Math.max(4, W * (1 - u * u))
+      ctx.shadowBlur = 24
+      ctx.fillStyle = '#ffffff'
+      ctx.fillRect((W - w) / 2, H / 2 - 2, w, 4)
+    } else if (t < lineEnd + SHUTDOWN.dot) {
+      // Last phosphor dot fades out.
+      const u = (t - lineEnd) / SHUTDOWN.dot
+      const r = H * 0.02 * (1 - u)
+      ctx.globalAlpha = 1 - u
+      ctx.shadowBlur = 30
+      ctx.fillStyle = '#ffffff'
+      ctx.beginPath()
+      ctx.arc(W / 2, H / 2, r, 0, Math.PI * 2)
+      ctx.fill()
+    }
+    ctx.restore()
   }
 
   private progressOf(id: ModuleId) {
@@ -1487,7 +1584,7 @@ export class Hud {
 
       ctx.shadowColor = PALETTE.green
       ctx.shadowBlur = 14 + glitch * 20
-      ctx.fillStyle = '#74f0a4'
+      ctx.fillStyle = PALETTE.greenText
       ctx.globalAlpha = glitch > 0.5 && Math.random() < 0.25 ? 0.4 : 1
       ctx.fillText(shown, cx + jitter, y)
       ctx.globalAlpha = 1
@@ -1539,7 +1636,7 @@ export class Hud {
         ctx.drawImage(canvas, g.x * s, g.y * s, g.w * s, g.h * s, (g.x + g.dx) * s, g.y * s, g.w * s, g.h * s)
         ctx.setTransform(s, 0, 0, s, 0, 0)
       } else {
-        ctx.fillStyle = Math.random() < 0.15 ? 'rgba(255, 255, 255, 0.8)' : '#74f0a4'
+        ctx.fillStyle = Math.random() < 0.15 ? 'rgba(255, 255, 255, 0.8)' : PALETTE.greenText
         ctx.fillRect(g.x, g.y, g.w, g.h)
       }
     }

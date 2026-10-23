@@ -19,6 +19,9 @@ type PostFxDebug = {
   sound: SoundDesignParams
 }
 
+/** Pane or folder — sections can be nested under a parent folder. */
+type Container = Pane | ReturnType<Pane['addFolder']>
+
 function bindSound(pane: Pane, sound: SoundDesignParams) {
   const folder = pane.addFolder({ title: 'Sound design', expanded: true })
   folder.addBinding(sound, 'enabled', { label: 'Activé' })
@@ -31,6 +34,15 @@ function bindSound(pane: Pane, sound: SoundDesignParams) {
   folder.addBinding(sound, 'humVolume', { min: 0, max: 2, step: 0.01, label: 'Bourdonnement écran' })
 }
 
+function bindBloom(parent: Container, params: PostFxParams) {
+  const bloom = parent.addFolder({ title: 'Bloom', expanded: true })
+  bloom.addBinding(params.bloom, 'enabled', { label: 'Activé' })
+  bloom.addBinding(params.bloom, 'intensity', { min: 0, max: 5, step: 0.01, label: 'Intensité' })
+  bloom.addBinding(params.bloom, 'threshold', { min: 0, max: 1.5, step: 0.01, label: 'Seuil' })
+  bloom.addBinding(params.bloom, 'smoothing', { min: 0, max: 1, step: 0.01, label: 'Douceur seuil' })
+  bloom.addBinding(params.bloom, 'radius', { min: 0, max: 1, step: 0.01, label: 'Rayon' })
+}
+
 function bindPostFx(pane: Pane, fx: PostFxDebug) {
   const { params } = fx
   const root = pane.addFolder({ title: 'Post-process', expanded: true })
@@ -40,13 +52,6 @@ function bindPostFx(pane: Pane, fx: PostFxDebug) {
   root.addBinding(params, 'msaa', { label: 'MSAA (bug Mac)' })
   root.addBinding(params, 'exposure', { min: 0.2, max: 3, step: 0.01, label: 'Exposition' })
   root.addBinding(fx.specularAA, 'value', { min: 0, max: 4, step: 0.05, label: 'Anti-scintillement' })
-
-  const bloom = root.addFolder({ title: 'Bloom', expanded: false })
-  bloom.addBinding(params.bloom, 'enabled', { label: 'Activé' })
-  bloom.addBinding(params.bloom, 'intensity', { min: 0, max: 5, step: 0.01, label: 'Intensité' })
-  bloom.addBinding(params.bloom, 'threshold', { min: 0, max: 1.5, step: 0.01, label: 'Seuil' })
-  bloom.addBinding(params.bloom, 'smoothing', { min: 0, max: 1, step: 0.01, label: 'Douceur seuil' })
-  bloom.addBinding(params.bloom, 'radius', { min: 0, max: 1, step: 0.01, label: 'Rayon' })
 
   const vignette = root.addFolder({ title: 'Vignette', expanded: false })
   vignette.addBinding(params.vignette, 'enabled', { label: 'Activé' })
@@ -83,7 +88,7 @@ export const DEFAULT_LIGHTING_PARAMS: LightingParams = {
   ambient: 0.12,
   room: 8,
   key: 0.25,
-  screenGlow: 22,
+  screenGlow: 40,
 }
 
 function bindFluidParams(folder: ReturnType<Pane['addFolder']>, params: MeterFluidParams) {
@@ -183,16 +188,16 @@ function bindCables(
   })
 }
 
-function bindLightingParams(pane: Pane, lighting: LightingParams) {
+function bindLightingParams(pane: Container, lighting: LightingParams) {
   const folder = pane.addFolder({ title: 'Lumière', expanded: true })
   folder.addBinding(lighting, 'ambient', { min: 0, max: 2, step: 0.01, label: 'Ambiante' })
   folder.addBinding(lighting, 'room', { min: 0, max: 80, step: 0.5, label: 'Room (écran off)' })
   folder.addBinding(lighting, 'key', { min: 0, max: 4, step: 0.05, label: 'Directionnelle' })
-  folder.addBinding(lighting, 'screenGlow', { min: 0, max: 40, step: 0.5, label: 'Glow écran' })
+  folder.addBinding(lighting, 'screenGlow', { min: 0, max: 80, step: 0.5, label: 'Glow écran (lampes on)' })
 }
 
 function bindWallLightParams(
-  pane: Pane,
+  pane: Container,
   wall: WallLightParams,
   onChange: () => void,
 ) {
@@ -253,8 +258,49 @@ export function createDebugPanel(
   cables: { specs: CableSpec[]; rebuild: (index: number) => void },
   postFx: PostFxDebug,
   arduinoState: { status: string; kicks: number; starHits: number; starState: string },
+  beforeTorches: { screenGlow: number; accentIntensity: number; accentAmbientShare: number },
 ) {
   const pane = new Pane({ title: 'The Last Rave', expanded: true })
+
+  // Everything the accent color touches, first — to tune the pink look in one place.
+  const color = pane.addFolder({ title: 'Couleur & lumière', expanded: true })
+  color
+    .addBinding(accent, 'pink', { label: 'Vert / Rose' })
+    .on('change', (ev) => {
+      actions.onAccentToggle(ev.value)
+      // Light + fluid color bindings changed under the pane.
+      pane.refresh()
+    })
+  bindLightingParams(color, lighting)
+  const green = color.addFolder({ title: 'Lumière accent (lampes allumées)', expanded: true })
+  green.addBinding(greenLight, 'enabled', { label: 'Activée' })
+  green.addBinding(greenLight, 'intensity', { min: 0, max: 3, step: 0.01, label: 'Intensité' })
+  green.addBinding(greenLight, 'ambientShare', { min: 0, max: 1, step: 0.01, label: 'Part ambiance' })
+  green.addBinding(greenLight, 'color', { label: 'Couleur' })
+  green.addBinding(greenLight, 'dirX', { min: -5, max: 5, step: 0.01, label: 'Direction X' })
+  green.addBinding(greenLight, 'dirY', { min: -5, max: 5, step: 0.01, label: 'Direction Y' })
+  green.addBinding(greenLight, 'dirZ', { min: 0.1, max: 10, step: 0.01, label: 'Direction Z' })
+
+  // Same three lights before the torches switch on (key L) — blends to the values above.
+  const before = color.addFolder({ title: 'Avant lampes torches', expanded: true })
+  before.addBinding(beforeTorches, 'screenGlow', { min: 0, max: 40, step: 0.5, label: 'Glow écran' })
+  before.addBinding(beforeTorches, 'accentIntensity', { min: 0, max: 3, step: 0.01, label: 'Accent intensité' })
+  before.addBinding(beforeTorches, 'accentAmbientShare', { min: 0, max: 1, step: 0.01, label: 'Accent part ambiance' })
+
+  const torches = color.addFolder({ title: 'Lampes torches', expanded: true })
+  torches.addBinding(flashlights, 'moving', { label: 'Mouvement' })
+  torches.addBinding(flashlights, 'period', { min: 6, max: 60, step: 0.5, label: 'Boucle (s)' })
+  torches.addBinding(flashlights, 'spread', { min: 1, max: 1.5, step: 0.01, label: 'Écart du bord' })
+  torches.addBinding(flashlights, 'z', { min: 0.1, max: 3, step: 0.01, label: 'Distance' })
+  torches.addBinding(flashlights, 'tremor', { min: 0, max: 0.15, step: 0.001, label: 'Tremblement' })
+  torches.addBinding(flashlights, 'share', { min: 0, max: 1.5, step: 0.01, label: 'Part du glow' })
+  torches.addBinding(flashlights, 'variation', { min: 0, max: 1, step: 0.01, label: 'Variation' })
+  torches.addBinding(flashlights, 'switchOnDelay', { min: 0, max: 6, step: 0.05, label: 'Allumage après (s)' })
+  torches.addBinding(flashlights, 'switchOnStagger', { min: 0, max: 3, step: 0.05, label: 'Écart allumages (s)' })
+  torches.addBinding(flashlights, 'idlePower', { min: 0, max: 1.5, step: 0.01, label: 'Puissance avant écran' })
+  torches.addBinding(flashlights, 'idleColor', { label: 'Couleur avant écran' })
+  bindWallLightParams(color, wallLight, actions.onWallLightChange)
+  bindBloom(color, postFx.params)
 
   const arduino = pane.addFolder({ title: 'Arduino', expanded: true })
   arduino.addButton({ title: 'Connecter Arduino' }).on('click', actions.onArduinoConnect)
@@ -267,13 +313,6 @@ export function createDebugPanel(
   scene
     .addBinding(textures, 'enabled', { label: 'Textures' })
     .on('change', (ev) => actions.onTexturesToggle(ev.value))
-  scene
-    .addBinding(accent, 'pink', { label: 'Vert / Rose' })
-    .on('change', (ev) => {
-      actions.onAccentToggle(ev.value)
-      // Light + fluid color bindings changed under the pane.
-      pane.refresh()
-    })
 
   const fisheye = pane.addFolder({ title: 'Fisheye', expanded: true })
   fisheye.addBinding(postFx.params.fisheye, 'enabled', { label: 'Activé' })
@@ -296,34 +335,10 @@ export function createDebugPanel(
 
   bindPostFx(pane, postFx)
   bindSound(pane, postFx.sound)
-  bindLightingParams(pane, lighting)
-
   const flood = pane.addFolder({ title: 'Lumière debug', expanded: true })
   flood.addBinding(debugLight, 'enabled', { label: 'Tout éclairer' })
   flood.addBinding(debugLight, 'intensity', { min: 0, max: 10, step: 0.1, label: 'Intensité' })
 
-  const green = pane.addFolder({ title: 'Lumière verte', expanded: true })
-  green.addBinding(greenLight, 'enabled', { label: 'Activée' })
-  green.addBinding(greenLight, 'intensity', { min: 0, max: 3, step: 0.01, label: 'Intensité' })
-  green.addBinding(greenLight, 'ambientShare', { min: 0, max: 1, step: 0.01, label: 'Part ambiance' })
-  green.addBinding(greenLight, 'color', { label: 'Couleur' })
-  green.addBinding(greenLight, 'dirX', { min: -5, max: 5, step: 0.01, label: 'Direction X' })
-  green.addBinding(greenLight, 'dirY', { min: -5, max: 5, step: 0.01, label: 'Direction Y' })
-  green.addBinding(greenLight, 'dirZ', { min: 0.1, max: 10, step: 0.01, label: 'Direction Z' })
-
-  const torches = pane.addFolder({ title: 'Lampes torches', expanded: true })
-  torches.addBinding(flashlights, 'moving', { label: 'Mouvement' })
-  torches.addBinding(flashlights, 'period', { min: 6, max: 60, step: 0.5, label: 'Boucle (s)' })
-  torches.addBinding(flashlights, 'spread', { min: 1, max: 1.5, step: 0.01, label: 'Écart du bord' })
-  torches.addBinding(flashlights, 'z', { min: 0.1, max: 3, step: 0.01, label: 'Distance' })
-  torches.addBinding(flashlights, 'tremor', { min: 0, max: 0.15, step: 0.001, label: 'Tremblement' })
-  torches.addBinding(flashlights, 'share', { min: 0, max: 1.5, step: 0.01, label: 'Part du glow' })
-  torches.addBinding(flashlights, 'variation', { min: 0, max: 1, step: 0.01, label: 'Variation' })
-  torches.addBinding(flashlights, 'switchOnDelay', { min: 0, max: 6, step: 0.05, label: 'Allumage après (s)' })
-  torches.addBinding(flashlights, 'switchOnStagger', { min: 0, max: 3, step: 0.05, label: 'Écart allumages (s)' })
-  torches.addBinding(flashlights, 'idlePower', { min: 0, max: 1.5, step: 0.01, label: 'Puissance avant écran' })
-  torches.addBinding(flashlights, 'idleColor', { label: 'Couleur avant écran' })
-  bindWallLightParams(pane, wallLight, actions.onWallLightChange)
   bindCables(pane, cables)
 
   const screenFx = pane.addFolder({ title: 'Écran HUD', expanded: true })
