@@ -1,6 +1,11 @@
 import * as THREE from "three";
 import Scene from "../../Scene";
-import { GameExperience } from "../../Game/GameExperience";
+import {
+    GameExperience,
+    HORN_LANE,
+    HOURGLASS_LANE,
+    STAR_LANE,
+} from "../../Game/GameExperience";
 import {
     createDebugPanel,
     DEFAULT_LIGHTING_PARAMS,
@@ -308,6 +313,10 @@ export default class LastRave extends Scene {
         this.game.whenHit((lane, noteTime, absSongTime) => {
             this.hud.registerRhythmHit(lane, noteTime, absSongTime);
         });
+        // First interaction with an object (or keys Z / E / R) reveals its trace —
+        // only once the poster is gone, never through it.
+        this.game.canFind = () => this.poster.gone;
+        this.game.whenFound(() => this.setSignalStage(this.game.found.length));
     }
 
     get maxAnisotropy() {
@@ -529,11 +538,12 @@ export default class LastRave extends Scene {
         }, Math.max(0, this.posterParams.windSoundLead) * 1000);
     }
 
-    /** 0 = intro, 1..3 = objects found, 4 = network reactivated (keys Z / E / R / T). */
+    /** 0 = intro, 1..3 = objects found (see GameExperience.found), 4 = network reactivated (key T). */
     setSignalStage(count: number) {
         if (count > 0 && !this.hud.isPowered) this.powerOn();
+        if (count === 0) this.game.resetFound();
+        this.hud.setSignalOrder(this.game.found);
         this.hud.setSignalStage(count);
-        this.game.setActiveLanes(Math.min(3, count));
         if (count > 0) {
             this.postFx.kick(count >= 4 ? 1 : 0.6);
             this.cameraRig.startle(count >= 4 ? 0.9 : 0.4);
@@ -544,8 +554,9 @@ export default class LastRave extends Scene {
     }
 
     /**
-     * Show controls by typed character (AZERTY-safe): L torches, A poster, Z / E / R signals
-     * 1-3, T network reactivated (end). H toggles the hidden debug panel.
+     * Show controls by typed character (AZERTY-safe): L torches, A poster, Z / E / R = corne /
+     * sablier / étoile found (backup if a sensor misses), T network reactivated (end).
+     * H toggles the hidden debug panel.
      */
     bindShowKeys(pane: { hidden: boolean }) {
         window.addEventListener("keydown", (event) => {
@@ -557,13 +568,13 @@ export default class LastRave extends Scene {
                     this.flyPoster();
                     break;
                 case "z":
-                    this.setSignalStage(1);
+                    this.game.markFound(HORN_LANE);
                     break;
                 case "e":
-                    this.setSignalStage(2);
+                    this.game.markFound(HOURGLASS_LANE);
                     break;
                 case "r":
-                    this.setSignalStage(3);
+                    this.game.markFound(STAR_LANE);
                     break;
                 case "t":
                     this.setSignalStage(4);
@@ -608,17 +619,8 @@ export default class LastRave extends Scene {
                     this.resetPunch();
                     this.powerOff();
                 },
-                onSignalStage: (count) => {
-                    if (count > 0 && !this.hud.isPowered) this.powerOn();
-                    this.hud.setSignalStage(count);
-                    if (count > 0) {
-                        this.postFx.kick(count >= 4 ? 1 : 0.6);
-                        this.cameraRig.startle(count >= 4 ? 0.9 : 0.4);
-                    }
-                    // Music starts on first signal object, not on the base "fête" screen.
-                    if (count >= 1) this.game.startLoop();
-                    if (count >= 4) this.game.playDrop();
-                },
+                onObjectFound: (lane) => this.game.markFound(lane),
+                onSignalStage: (count) => this.setSignalStage(count),
                 onPosterNormalToggle: (enabled) => {
                     this.posterNormal.enabled = enabled;
                     this.poster.setNormalEnabled(enabled);
@@ -771,6 +773,8 @@ export default class LastRave extends Scene {
         window.clearTimeout(this.powerOnTimer);
         window.clearTimeout(this.flyTimer);
         this.flyTimer = 0;
+        // Screen off = back to the start: every object has to be found again.
+        this.game.resetFound();
         this.screenPowerTarget = 0;
         this.screenPower = 0;
         this.hud.setPowered(false);

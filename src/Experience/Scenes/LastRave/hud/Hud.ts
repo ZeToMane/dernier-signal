@@ -298,6 +298,11 @@ export class Hud {
     this.signalScreen.registerHit(lane, noteTime, absSongTime)
   }
 
+  /** Objects found, in the order they were found: each one reveals its own trace. */
+  setSignalOrder(lanes: readonly number[]) {
+    this.signalScreen.setOrder(lanes)
+  }
+
   /**
    * 0 = back to the intro screen; 1..3 = objects found; 4 = network reactivated. The first
    * object swaps to the signal screen (layout re-boot), each next one unlocks one more trace.
