@@ -12,12 +12,21 @@ import type Arduino from "./Arduino";
  * avec un capteur bien couvert (≈ 200 vs 870), un doigt qui bouge un peu ne suffit plus.
  * Et un maximum (TRAVEL_MAX) : un vieux pic de lumière (≈ 1000) mémorisé pendant qu'on cache
  * ne doit pas exiger une remontée que la lumière actuelle (≈ 450) n'atteindra jamais.
+ * Pièce sombre (≈ 26 ouverte / 12 cachée avec la 10 kΩ) : l'écart n'atteint jamais ces minimums.
+ * Le seuil devient alors une part du niveau lui-même (on garde le plus facile des deux) :
+ * en pièce claire rien ne change, dans le noir on arme sous ~65 % du niveau ouvert.
  * Hit = on DÉCOUVRE (main qui s'ouvre), arme = on CACHE.
  */
 const COVER_DROP = 70;
 const UNCOVER_RISE = 50;
 const TRAVEL_RATIO = 0.5;
 const TRAVEL_MAX = 150;
+/** Pièce sombre : cachée = chute de cette part du niveau ouvert. */
+const COVER_LEVEL_RATIO = 0.35;
+/** Pièce sombre : découverte = remontée de cette part au-dessus du creux. */
+const UNCOVER_LEVEL_RATIO = 0.4;
+/** Plancher des seuils (brut) : le scintillement de l'écran ne doit pas suffire. */
+const MIN_STEP = 8;
 /** Après un hit, « cachée » est ignoré le temps que la main finisse de s'ouvrir (rebonds). */
 const HIT_LOCKOUT_MS = 180;
 /** Moyenne glissante (×15 ms côté Arduino) : lisse le scintillement écran / LED. */
@@ -135,11 +144,15 @@ export default class Star extends EventEmitter {
     }
 
     private coverThreshold() {
-        return Math.min(TRAVEL_MAX, Math.max(this.coverDrop, this.contrast() * this.travelRatio));
+        const travel = Math.min(TRAVEL_MAX, Math.max(this.coverDrop, this.contrast() * this.travelRatio));
+        const dim = (this.openLevel ?? 0) * COVER_LEVEL_RATIO;
+        return Math.max(MIN_STEP, Math.min(travel, dim));
     }
 
     private uncoverThreshold() {
-        return Math.min(TRAVEL_MAX, Math.max(this.uncoverRise, this.contrast() * this.travelRatio));
+        const travel = Math.min(TRAVEL_MAX, Math.max(this.uncoverRise, this.contrast() * this.travelRatio));
+        const dim = (this.darkLevel ?? 0) * UNCOVER_LEVEL_RATIO;
+        return Math.max(MIN_STEP, Math.min(travel, dim));
     }
 
     private logStatus() {
