@@ -126,9 +126,8 @@ const NOTE_PEAK_LEN = 0.22
 /** Chart scroll speed (design px / s), right → left, shared by all traces. */
 const SCROLL_SPEED = 70
 const REVEAL_DURATION = 0.9
-/** Accuracy drifts forever in this incomplete band (never full). */
-const ACCURACY_MIN = 1
-const ACCURACY_MAX = 4
+/** How fast the displayed accuracy chases the real one (1/s). */
+const ACCURACY_LERP = 4
 /** Final stage: the three traces converge onto this line. */
 const MERGED_Y = GRAPH.y + GRAPH.h / 2
 /** Extra gain once the network is locked — big club peaks. */
@@ -367,10 +366,13 @@ export class SignalScreen {
   private readonly laneY = [MERGED_Y, MERGED_Y, MERGED_Y]
   /** Lane positions when the last acquire started (for spring redistribution). */
   private readonly laneFrom = [MERGED_Y, MERGED_Y, MERGED_Y]
-  /** Live accuracy — wanders between ACCURACY_MIN/MAX, independent of found objects. */
-  private accuracy = (ACCURACY_MIN + ACCURACY_MAX) * 0.5
-  private accuracyTarget = ACCURACY_MIN + Math.random() * (ACCURACY_MAX - ACCURACY_MIN)
-  private accuracyRetargetIn = 0.4
+  /** Displayed rhythm accuracy (0–100), eased toward `accuracyTarget`. */
+  private accuracy = 0
+  private accuracyTarget = 0
+  /** Accuracy the player must hold to reactivate the network (tick on the ring). */
+  private accuracyThreshold = 0
+  /** 0..1 progress of holding the threshold. */
+  private accuracyHold = 0
   /** Brief overdrive on Accuracy / UNSTABLE when a new signal is found. */
   private meterBoost: { elapsed: number; duration: number } | null = null
   /** Stage 4 — network reactivated: traces merge, every meter pinned to max. */
@@ -415,6 +417,11 @@ export class SignalScreen {
 
   setMusicLevel(bass: number) {
     this.bass = bass
+  /** Real rhythm accuracy (0–100), the target to hold, and 0..1 hold progress. */
+  setAccuracy(value: number, threshold: number, hold: number) {
+    this.accuracyTarget = Math.max(0, Math.min(100, value))
+    this.accuracyThreshold = threshold
+    this.accuracyHold = clamp01(hold)
   }
 
   /** Drive the graph from the AudioEngine clock (null = decorative / pre-music). */
@@ -612,7 +619,8 @@ export class SignalScreen {
       this.accuracyTarget = ACCURACY_MIN + Math.random() * (ACCURACY_MAX - ACCURACY_MIN)
       this.accuracyRetargetIn = 0.35 + Math.random() * 0.9
     }
-    this.accuracy += (this.accuracyTarget - this.accuracy) * Math.min(1, dt * 1.8)
+
+    this.accuracy += (this.accuracyTarget - this.accuracy) * Math.min(1, dt * ACCURACY_LERP)
 
     // Redistribute lanes — spring overshoot during acquire, soft lerp otherwise.
     if (this.found > 0) {
@@ -1188,14 +1196,18 @@ export class SignalScreen {
       const cy = headerY + (ACCURACY.h - ACCURACY_HEADER_H) / 2
       const radius = 44
       const shown = this.boostedAccuracy()
-      const glow = Math.max(0, (shown - this.accuracy) / (98 - ACCURACY_MIN))
+      const rave = this.raveLevel() > 0
+      const holding = !rave && this.accuracyHold > 0
+      // Pulses faster as the hold nears completion.
+      const holdPulse = holding ? 0.5 + 0.5 * Math.sin(this.now * (8 + this.accuracyHold * 16)) : 0
+      const glow = Math.max(0, (shown - this.accuracy) / 98, holding ? this.accuracyHold * (0.5 + 0.5 * holdPulse) : 0)
+      const start = -Math.PI / 2
       ctx.save()
       ctx.lineWidth = 8
       ctx.strokeStyle = `rgba(${PALETTE.greenRgb}, 0.1)`
       ctx.beginPath()
       ctx.arc(cx, cy, radius, 0, Math.PI * 2)
       ctx.stroke()
-      const start = -Math.PI / 2
       ctx.strokeStyle = PALETTE.green
       ctx.shadowColor = PALETTE.green
       ctx.shadowBlur = 8 + glow * 14
@@ -1203,6 +1215,28 @@ export class SignalScreen {
       ctx.beginPath()
       ctx.arc(cx, cy, radius, start, start + (Math.PI * 2 * shown) / 100)
       ctx.stroke()
+
+      if (!rave && this.accuracyThreshold > 0) {
+        // Target tick across the ring.
+        const a = start + (Math.PI * 2 * this.accuracyThreshold) / 100
+        ctx.shadowBlur = 0
+        ctx.lineWidth = 1.5
+        ctx.strokeStyle = shown >= this.accuracyThreshold ? PALETTE.green : PALETTE.greenDim
+        ctx.beginPath()
+        ctx.moveTo(cx + Math.cos(a) * (radius - 7), cy + Math.sin(a) * (radius - 7))
+        ctx.lineTo(cx + Math.cos(a) * (radius + 7), cy + Math.sin(a) * (radius + 7))
+        ctx.stroke()
+      }
+
+      if (holding) {
+        // Outer hold arc: fills while the target accuracy is kept.
+        ctx.shadowBlur = 6 + holdPulse * 8
+        ctx.lineWidth = 2
+        ctx.strokeStyle = PALETTE.green
+        ctx.beginPath()
+        ctx.arc(cx, cy, radius + 10, start, start + Math.PI * 2 * this.accuracyHold)
+        ctx.stroke()
+      }
       ctx.restore()
 
       ctx.fillStyle = PALETTE.green

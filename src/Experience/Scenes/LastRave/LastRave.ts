@@ -181,6 +181,9 @@ const FLASHLIGHT_SEEDS = [
         decay: 1.8,
     },
 ];
+/** Network reactivates once all 3 objects are found and accuracy stays ≥ FINAL_ACCURACY for FINAL_HOLD s. */
+const FINAL_ACCURACY = 60;
+const FINAL_HOLD = 3;
 
 type Globe = ReturnType<typeof createGlobe>;
 
@@ -252,6 +255,7 @@ export default class LastRave extends Scene {
     /** Previous frame's merge-glitch level (fires the drop glitch sound on the rising edge). */
     private lastMergeGlitch = 0;
     globeShown = false;
+    accuracyHold = 0;
 
     // Wind punch: snap right+down, then slow dazed ease back to center.
     punch: { elapsed: number } | null = null;
@@ -581,14 +585,36 @@ export default class LastRave extends Scene {
                 onWallLightChange: () =>
                     applyWallLightParams(this.wall, this.wallLightParams),
                 onGlobeBoost: () => this.globe.triggerBoost(),
-                onPosterFly: () => this.flyPoster(),
+                onPosterFly: () => {
+                    if (this.poster.gone || this.poster.flying) return;
+                    this.poster.fly();
+                    this.punch = { elapsed: 0 };
+                    this.postFx.kick(1);
+                    this.cameraRig.startle(1);
+                    // Screen boots 200ms after the poster starts peeling off.
+                    this.powerOnTimer = window.setTimeout(
+                        () => this.powerOn(),
+                        Math.max(0.02, this.posterParams.windCamHit) * 1000 +
+                            200,
+                    );
+                },
                 onPosterReset: () => {
                     if (this.poster.gone) this.spawnPoster();
                     else this.poster.reset();
                     this.resetPunch();
                     this.powerOff();
                 },
-                onSignalStage: (count) => this.setSignalStage(count),
+                onSignalStage: (count) => {
+                    if (count > 0 && !this.hud.isPowered) this.powerOn();
+                    this.hud.setSignalStage(count);
+                    if (count > 0) {
+                        this.postFx.kick(count >= 4 ? 1 : 0.6);
+                        this.cameraRig.startle(count >= 4 ? 0.9 : 0.4);
+                    }
+                    // Music starts on first signal object, not on the base "fête" screen.
+                    if (count >= 1) this.game.startLoop();
+                    if (count >= 4) this.game.playDrop();
+                },
                 onPosterNormalToggle: (enabled) => {
                     this.posterNormal.enabled = enabled;
                     this.poster.setNormalEnabled(enabled);
@@ -658,6 +684,34 @@ export default class LastRave extends Scene {
                 if (tinted.emissive?.equals(from)) tinted.emissive.copy(to);
             }
         });
+        );
+    }
+
+    /** 0 = intro, 1..3 = objects found, 4 = network reactivated (final). */
+    setSignalStage(count: number) {
+        if (count > 0 && !this.hud.isPowered) this.powerOn();
+        this.hud.setSignalStage(count);
+        this.game.setActiveLanes(Math.min(3, count));
+        this.accuracyHold = 0;
+        // Music starts on first signal object, not on the base "fête" screen.
+        if (count >= 1) this.game.startLoop();
+        if (count >= 4) this.game.playDrop();
+    }
+
+    updateFinalTrigger(dt: number) {
+        const accuracy = this.game.accuracy;
+        const armed = this.hud.signalsFound === 3;
+
+        if (armed && accuracy >= FINAL_ACCURACY) this.accuracyHold += dt;
+        else this.accuracyHold = 0;
+
+        this.hud.setRhythmAccuracy(
+            accuracy,
+            armed ? FINAL_ACCURACY : 0,
+            this.accuracyHold / FINAL_HOLD,
+        );
+
+        if (this.accuracyHold >= FINAL_HOLD) this.setSignalStage(4);
     }
 
     applyPosterMap() {
@@ -730,6 +784,7 @@ export default class LastRave extends Scene {
 
         this.hud.setRhythmSongTime(this.game.songTime());
         this.hud.setMusicLevel(this.game.audio.bassLevel);
+        this.updateFinalTrigger(dt);
         this.hud.update(dt);
         if (this.hud.showsGlobe !== this.globeShown) {
             this.globeShown = this.hud.showsGlobe;
@@ -750,6 +805,7 @@ export default class LastRave extends Scene {
             flicker: this.lastFlicker,
             musicPlaying: this.game.musicPlaying,
         });
+        this.postFx.setGlitchLevel(this.hud.mergeGlitch);
         this.environment.update(time, dt, {
             screenPower: this.screenPower,
             flicker: this.lastFlicker,

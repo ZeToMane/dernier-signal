@@ -10,6 +10,8 @@ const LANES = [
 
 /** |hit - note| under this (seconds) counts. Early hits are scheduled on the note. */
 const HIT_WINDOW = 0.12;
+/** Accuracy = share of hits among the last N judgments (hits, misses, stray presses). */
+const ACCURACY_SAMPLES = 10;
 
 type Phase = "idle" | "loop" | "drop";
 
@@ -28,6 +30,9 @@ export class GameExperience {
     private chart: ChartData | null = null;
     private pending: PendingNote[] = [];
     private phase: Phase = "idle";
+    /** Only lanes whose trace is revealed (one per found object) are judged. */
+    private activeLanes = 0;
+    private judgments: boolean[] = [];
     private starting = false;
     private dropRequested = false;
     private onChartReady:
@@ -80,6 +85,19 @@ export class GameExperience {
         void this.begin();
     }
 
+    /** 0–100, over the last ACCURACY_SAMPLES judgments (0 before any). */
+    get accuracy() {
+        if (this.judgments.length === 0) return 0;
+        const hits = this.judgments.filter(Boolean).length;
+        return (hits / this.judgments.length) * 100;
+    }
+
+    /** Number of playable lanes (= signal objects found, max 3). */
+    setActiveLanes(count: number) {
+        this.activeLanes = Math.max(0, Math.min(LANES.length, count));
+        if (this.activeLanes === 0) this.judgments = [];
+    }
+
     /** Debug stand-in for signal validation: LOOP gives way to the looping DROP. */
     playDrop() {
         this.dropRequested = true;
@@ -94,8 +112,14 @@ export class GameExperience {
         this.pending = this.pending.filter((note) => {
             if (note.hit) return false;
             if (now <= note.at + HIT_WINDOW) return true;
+            if (note.lane < this.activeLanes) this.judge(false);
             return false;
         });
+    }
+
+    private judge(hit: boolean) {
+        this.judgments.push(hit);
+        if (this.judgments.length > ACCURACY_SAMPLES) this.judgments.shift();
     }
 
     dispose() {
@@ -188,7 +212,7 @@ export class GameExperience {
     }
 
     private onLane(lane: number) {
-        if (this.phase !== "loop") return;
+        if (this.phase !== "loop" || lane >= this.activeLanes) return;
 
         const now = this.audio.currentTime;
         let best: PendingNote | null = null;
@@ -203,6 +227,8 @@ export class GameExperience {
             }
         }
 
+        // Pressing with no note in reach counts as a miss — no spamming to 100%.
+        this.judge(best !== null);
         if (!best) return;
 
         best.hit = true;

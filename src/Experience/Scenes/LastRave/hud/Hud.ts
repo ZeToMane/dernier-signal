@@ -286,6 +286,9 @@ export class Hud {
   /** Music low-end level (0..1) — the merged trace shakes on the kicks. */
   setMusicLevel(bass: number) {
     this.signalScreen.setMusicLevel(bass)
+  /** Live rhythm accuracy (0–100), the target to hold and 0..1 hold progress. */
+  setRhythmAccuracy(value: number, threshold: number, hold: number) {
+    this.signalScreen.setAccuracy(value, threshold, hold)
   }
 
   /** Visual feedback: collapse the peak for a caught note. */
