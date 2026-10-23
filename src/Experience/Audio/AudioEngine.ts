@@ -3,6 +3,9 @@ export default class AudioEngine {
     private buffers: Map<string, AudioBuffer>;
     private bgmSource: AudioBufferSourceNode | null = null;
     private bgmGain: GainNode;
+    /** Taps the music bus so visuals can follow the beat. */
+    private bgmAnalyser: AnalyserNode;
+    private bgmSpectrum: Uint8Array<ArrayBuffer>;
     /** Bus for UI / sound-design one-shots (own volume, separate from music). */
     private sfxGain: GainNode;
 
@@ -13,7 +16,11 @@ export default class AudioEngine {
 
         // Setup a main gain node for background music to allow volume control
         this.bgmGain = this.audioCtx.createGain();
-        this.bgmGain.connect(this.audioCtx.destination);
+        this.bgmAnalyser = this.audioCtx.createAnalyser();
+        this.bgmAnalyser.fftSize = 2048;
+        this.bgmAnalyser.smoothingTimeConstant = 0.5;
+        this.bgmSpectrum = new Uint8Array(this.bgmAnalyser.frequencyBinCount);
+        this.bgmGain.connect(this.bgmAnalyser).connect(this.audioCtx.destination);
 
         this.sfxGain = this.audioCtx.createGain();
         this.sfxGain.connect(this.audioCtx.destination);
@@ -24,8 +31,53 @@ export default class AudioEngine {
         return this.audioCtx.state === "running";
     }
 
+    /** 0..1 low-end energy of the music right now (kick + bass, ~20–150 Hz). */
+    public get bassLevel(): number {
+        this.bgmAnalyser.getByteFrequencyData(this.bgmSpectrum);
+        const binHz = this.audioCtx.sampleRate / this.bgmAnalyser.fftSize;
+        const last = Math.max(1, Math.round(150 / binHz));
+        let sum = 0;
+        for (let i = 1; i <= last; i++) sum += this.bgmSpectrum[i]!;
+        return sum / (last * 255);
+    }
+
     public setSfxVolume(volume: number): void {
         this.sfxGain.gain.value = volume;
+    }
+
+    /**
+     * Seamless looping bed on the SFX bus (ambience, hums). Returns a handle whose
+     * volume glides smoothly (no clicks), or null if the buffer isn't loaded / audio locked.
+     */
+    public playLoop(
+        id: string,
+        volume = 0,
+    ): { setVolume(value: number, glide?: number): void; stop(): void } | null {
+        const buffer = this.buffers.get(id);
+        if (!buffer || !this.isRunning) return null;
+
+        const source = this.audioCtx.createBufferSource();
+        source.buffer = buffer;
+        source.loop = true;
+        const gain = this.audioCtx.createGain();
+        gain.gain.value = volume;
+        source.connect(gain).connect(this.sfxGain);
+        source.start();
+
+        return {
+            setVolume: (value: number, glide = 0.08) => {
+                gain.gain.setTargetAtTime(value, this.audioCtx.currentTime, glide);
+            },
+            stop: () => {
+                try {
+                    source.stop();
+                } catch {
+                    // already stopped
+                }
+                source.disconnect();
+                gain.disconnect();
+            },
+        };
     }
 
     /**
@@ -34,7 +86,23 @@ export default class AudioEngine {
      */
     public playSfx(
         id: string,
-        { volume = 1, rate = 1, pan = 0 }: { volume?: number; rate?: number; pan?: number } = {},
+        {
+            volume = 1,
+            rate = 1,
+            pan = 0,
+            offset = 0,
+            duration,
+            fadeOut = 0.04,
+        }: {
+            volume?: number;
+            rate?: number;
+            pan?: number;
+            /** Start this many seconds into the sample (random slices of long textures). */
+            offset?: number;
+            /** Play only this long (seconds of sample), with a short fade-out. */
+            duration?: number;
+            fadeOut?: number;
+        } = {},
     ): void {
         const buffer = this.buffers.get(id);
         if (!buffer || !this.isRunning) return;
@@ -48,7 +116,18 @@ export default class AudioEngine {
         panner.pan.value = Math.max(-1, Math.min(1, pan));
         source.connect(gain).connect(panner).connect(this.sfxGain);
         source.onended = () => source.disconnect();
-        source.start();
+        const start = Math.max(0, Math.min(offset, buffer.duration - 0.01));
+        if (duration === undefined) {
+            source.start(0, start);
+            return;
+        }
+        // Clip: fade out over the last `fadeOut` (wall-clock = sample time / rate).
+        const now = this.audioCtx.currentTime;
+        const length = duration / rate;
+        const fade = Math.min(fadeOut, length * 0.5);
+        gain.gain.setValueAtTime(volume, now + length - fade);
+        gain.gain.linearRampToValueAtTime(0, now + length);
+        source.start(0, start, duration);
     }
 
     /**

@@ -25,6 +25,10 @@ function bindSound(pane: Pane, sound: SoundDesignParams) {
   folder.addBinding(sound, 'volume', { min: 0, max: 2, step: 0.01, label: 'Volume SFX' })
   folder.addBinding(sound, 'pitchSpread', { min: 0, max: 2, step: 0.01, label: 'Variation pitch' })
   folder.addBinding(sound, 'stereo', { min: 0, max: 1, step: 0.01, label: 'Stéréo' })
+  folder.addBinding(sound, 'ambientVolume', { min: 0, max: 2, step: 0.01, label: 'Ambiance bunker' })
+  folder.addBinding(sound, 'ambientDuck', { min: 0, max: 1, step: 0.01, label: 'Baisse sous musique' })
+  folder.addBinding(sound, 'breathVolume', { min: 0, max: 1, step: 0.01, label: 'Respiration' })
+  folder.addBinding(sound, 'humVolume', { min: 0, max: 2, step: 0.01, label: 'Bourdonnement écran' })
 }
 
 function bindPostFx(pane: Pane, fx: PostFxDebug) {
@@ -130,6 +134,7 @@ function bindPosterParams(folder: ReturnType<Pane['addFolder']>, params: PosterP
   pose.addBinding(params, 'rotZ', { min: -1, max: 1, step: 0.01, label: 'Rot Z' })
 
   const fly = folder.addFolder({ title: 'Envol', expanded: true })
+  fly.addBinding(params, 'windSoundLead', { min: 0, max: 2, step: 0.05, label: 'Son en avance (s)' })
   fly.addBinding(params, 'windDuration', { min: 0.1, max: 1.5, step: 0.05, label: 'Vent durée' })
   fly.addBinding(params, 'windLead', { min: 0, max: 0.5, step: 0.01, label: 'Vent avance' })
   fly.addBinding(params, 'wind', { min: 0, max: 4, step: 0.05, label: 'Vent force' })
@@ -225,9 +230,13 @@ export function createDebugPanel(
     onWallLightChange: () => void
     onPosterNormalToggle: (enabled: boolean) => void
     onScreenRoughnessToggle: (enabled: boolean) => void
+    onTexturesToggle: (enabled: boolean) => void
+    onAccentToggle: (pink: boolean) => void
   },
   posterNormal: { enabled: boolean },
   screenRoughness: { enabled: boolean },
+  textures: { enabled: boolean },
+  accent: { pink: boolean },
   flashlights: FlashlightParams,
   debugLight: { enabled: boolean; intensity: number },
   greenLight: {
@@ -243,6 +252,18 @@ export function createDebugPanel(
   postFx: PostFxDebug,
 ) {
   const pane = new Pane({ title: 'The Last Rave', expanded: true })
+
+  const scene = pane.addFolder({ title: 'Scène', expanded: true })
+  scene
+    .addBinding(textures, 'enabled', { label: 'Textures' })
+    .on('change', (ev) => actions.onTexturesToggle(ev.value))
+  scene
+    .addBinding(accent, 'pink', { label: 'Vert / Rose' })
+    .on('change', (ev) => {
+      actions.onAccentToggle(ev.value)
+      // Light + fluid color bindings changed under the pane.
+      pane.refresh()
+    })
 
   const fisheye = pane.addFolder({ title: 'Fisheye', expanded: true })
   fisheye.addBinding(postFx.params.fisheye, 'enabled', { label: 'Activé' })
@@ -290,6 +311,10 @@ export function createDebugPanel(
   torches.addBinding(flashlights, 'tremor', { min: 0, max: 0.15, step: 0.001, label: 'Tremblement' })
   torches.addBinding(flashlights, 'share', { min: 0, max: 1.5, step: 0.01, label: 'Part du glow' })
   torches.addBinding(flashlights, 'variation', { min: 0, max: 1, step: 0.01, label: 'Variation' })
+  torches.addBinding(flashlights, 'switchOnDelay', { min: 0, max: 6, step: 0.05, label: 'Allumage après (s)' })
+  torches.addBinding(flashlights, 'switchOnStagger', { min: 0, max: 3, step: 0.05, label: 'Écart allumages (s)' })
+  torches.addBinding(flashlights, 'idlePower', { min: 0, max: 1.5, step: 0.01, label: 'Puissance avant écran' })
+  torches.addBinding(flashlights, 'idleColor', { label: 'Couleur avant écran' })
   bindWallLightParams(pane, wallLight, actions.onWallLightChange)
   bindCables(pane, cables)
 

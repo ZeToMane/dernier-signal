@@ -20,6 +20,8 @@ export type PosterParams = {
   rotX: number
   rotY: number
   rotZ: number
+  /** How long the wind sound plays before the poster takes off (seconds). */
+  windSoundLead: number
   /** Wind-wave duration (seconds). */
   windDuration: number
   /** How long the camera gust leads the paper swell (seconds). */
@@ -58,6 +60,7 @@ export const DEFAULT_POSTER_PARAMS: PosterParams = {
   rotX: 0,
   rotY: 0,
   rotZ: -0.1,
+  windSoundLead: 0.1,
   windDuration: 0.55,
   windLead: 0.04,
   wind: 0.9,

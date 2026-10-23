@@ -18,7 +18,7 @@ import {
     type Texture,
 } from "three";
 import { mergeGeometries } from "three/examples/jsm/utils/BufferGeometryUtils.js";
-import { SCREEN_HEIGHT, SCREEN_WIDTH } from "../../layout";
+import { PALETTE, SCREEN_HEIGHT, SCREEN_WIDTH } from "../../layout";
 import {
     createMaterials,
     transformedBox,
@@ -392,7 +392,8 @@ function buildRivets(
 }
 
 const LED_RED = new Color("#ff3a2a");
-const LED_GREEN = new Color("#22f08f");
+/** Live accent — re-read every frame so the color variant applies. */
+const LED_GREEN = new Color(PALETTE.green);
 const ledScratch = new Color();
 const spill = [new Color(), new Color()];
 const spillPower = [0, 0];
@@ -511,6 +512,7 @@ export function createEnvironment() {
                 pulse = state.signalStage >= 4 ? 1.4 : state.signalStage > 0 ? 0.85 : 0;
             }
             pulse = Math.max(0, pulse - dt * 1.1);
+            LED_GREEN.set(PALETTE.green);
 
             const idle = 0.55 + 0.45 * Math.sin(time * 3.1);
             const blink = Math.sin(time * 7.4) > 0.72 ? 0.25 : 1;

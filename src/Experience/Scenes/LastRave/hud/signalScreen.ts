@@ -101,7 +101,9 @@ const CURVES: CurveConfig[] = [
     seed: 1.7,
   },
   {
-    color: '#2fe0a0',
+    get color() {
+      return PALETTE.greenLane
+    },
     amp: 20,
     cycles: 2,
     loop: 6,
@@ -148,7 +150,9 @@ const FLASH_AT = 2.24
  * off-beat ghosts, a long wobble hit and a roll building into the next bar.
  */
 const SYNC_CURVE: CurveConfig = {
-  color: PALETTE.green,
+  get color() {
+    return PALETTE.green
+  },
   amp: 22,
   cycles: 2,
   loop: 8,
@@ -183,6 +187,9 @@ const SYNC_CURVE: CurveConfig = {
   ],
   seed: 3.1,
 }
+
+/** Kick detection on the music's low end: rise over the running average → beat. */
+const BEAT = { avgRate: 1.5, threshold: 0.12, decay: 9 }
 
 /** Slow swell under the merged trace so the line itself breathes. */
 const carrierAt = (wx: number, time: number) =>
@@ -379,6 +386,10 @@ export class SignalScreen {
    * against this clock so a note at `t` crosses the cursor at song time `t`.
    */
   private songTime: number | null = null
+  /** Live music low end (0..1), its running average, and the decaying kick pulse. */
+  private bass = 0
+  private bassAvg = 0
+  private beat = 0
   /**
    * Successful hits keyed by absolute song time of the note occurrence.
    * Only that pass is collapsed — the next loop arrives full height.
@@ -404,6 +415,8 @@ export class SignalScreen {
     }
   }
 
+  setMusicLevel(bass: number) {
+    this.bass = bass
   /** Real rhythm accuracy (0–100), the target to hold, and 0..1 hold progress. */
   setAccuracy(value: number, threshold: number, hold: number) {
     this.accuracyTarget = Math.max(0, Math.min(100, value))
@@ -584,6 +597,9 @@ export class SignalScreen {
 
   update(dt: number, now = this.now) {
     this.now = now
+    this.bassAvg += (this.bass - this.bassAvg) * Math.min(1, dt * BEAT.avgRate)
+    const onset = clamp01((this.bass - this.bassAvg) / BEAT.threshold)
+    this.beat = Math.max(onset, this.beat * Math.exp(-dt * BEAT.decay))
     if (this.meterBoost) {
       this.meterBoost.elapsed += dt
       if (this.meterBoost.elapsed >= this.meterBoost.duration) this.meterBoost = null
@@ -723,7 +739,7 @@ export class SignalScreen {
       const lit = Math.round((bars * shown) / 100)
       for (let i = 0; i < bars; i++) {
         const h = 6 + i * 0.6
-        ctx.fillStyle = i < lit ? PALETTE.green : 'rgba(34, 240, 143, 0.15)'
+        ctx.fillStyle = i < lit ? PALETTE.green : `rgba(${PALETTE.greenRgb}, 0.15)`
         ctx.fillRect(108 + i * 4.6, 83 - h, 2.6, h)
       }
     })
@@ -780,7 +796,7 @@ export class SignalScreen {
     const cols = 32
     for (let i = 1; i < cols; i++) {
       const x = GRAPH.x + (GRAPH.w * i) / cols
-      ctx.strokeStyle = i % 4 === 0 ? 'rgba(34, 240, 143, 0.16)' : 'rgba(34, 240, 143, 0.06)'
+      ctx.strokeStyle = i % 4 === 0 ? `rgba(${PALETTE.greenRgb}, 0.16)` : `rgba(${PALETTE.greenRgb}, 0.06)`
       ctx.beginPath()
       ctx.moveTo(x, GRAPH.y)
       ctx.lineTo(x, bottom)
@@ -789,7 +805,7 @@ export class SignalScreen {
     const rows = 16
     for (let i = 1; i < rows; i++) {
       const y = GRAPH.y + (GRAPH.h * i) / rows
-      ctx.strokeStyle = i % 4 === 0 ? 'rgba(34, 240, 143, 0.16)' : 'rgba(34, 240, 143, 0.06)'
+      ctx.strokeStyle = i % 4 === 0 ? `rgba(${PALETTE.greenRgb}, 0.16)` : `rgba(${PALETTE.greenRgb}, 0.06)`
       ctx.beginPath()
       ctx.moveTo(GRAPH.x, y)
       ctx.lineTo(right, y)
@@ -941,19 +957,26 @@ export class SignalScreen {
     const swell = smoothstep(RAVE.sync, RAVE.lock + 0.5, t)
     // Crossfade: brief lock phrase → generative evolving signal.
     const evolve = smoothstep(0.35, 1.1, live)
+    // Music kick: the whole line shudders and the peaks pump on each beat.
+    const kick = this.beat
+    const shudder = (sx: number) =>
+      kick > 0.01
+        ? kick * (Math.sin(sx * 0.85 + now * 73) * 5 + Math.sin(sx * 0.31 - now * 41) * 3.5)
+        : 0
     const yAt = (sx: number) => {
       // Locked phrase still uses chart scroll; live techno runs on the fast rail.
       const wxLock = t * SCROLL_SPEED + (sx - CURSOR_X)
       const wxLive = t * RAVE_SCROLL + (sx - CURSOR_X)
       const locked = peakAt(wxLock, SYNC_CURVE, now) * 1.35
       const evolving = evolvingPeakAt(wxLive, live)
-      const peak = (locked * (1 - evolve) + evolving * evolve) * grow
+      const peak = (locked * (1 - evolve) + evolving * evolve) * grow * (1 + kick * 0.45)
       return (
         MERGED_Y -
         baselineAt(wxLive, SYNC_CURVE.seed, now) * (0.8 + evolve * 0.4) -
         carrierAt(wxLive, now) * swell * (0.5 + evolve * 0.6) -
         peak -
-        surgeAt(sx)
+        surgeAt(sx) -
+        shudder(sx)
       )
     }
 
@@ -970,8 +993,8 @@ export class SignalScreen {
 
     // Wide halo pass, then a hot white-green core.
     for (const pass of [
-      { color: PALETTE.green, width: 4.2 + hot * 2.5, blur: 22 + densityGlow * 12 + hot * 18, alpha: 0.4 },
-      { color: '#e6fff2', width: 1.8 + hot * 1.4, blur: 10 + densityGlow * 8 + hot * 22, alpha: 1 },
+      { color: PALETTE.green, width: 4.2 + hot * 2.5 + kick * 1.5, blur: 22 + densityGlow * 12 + hot * 18 + kick * 14, alpha: 0.4 },
+      { color: PALETTE.greenCore, width: 1.8 + hot * 1.4 + kick * 0.8, blur: 10 + densityGlow * 8 + hot * 22 + kick * 10, alpha: 1 },
     ]) {
       ctx.globalAlpha = pass.alpha * fadeIn
       ctx.strokeStyle = pass.color
@@ -1181,7 +1204,7 @@ export class SignalScreen {
       const start = -Math.PI / 2
       ctx.save()
       ctx.lineWidth = 8
-      ctx.strokeStyle = 'rgba(34, 240, 143, 0.1)'
+      ctx.strokeStyle = `rgba(${PALETTE.greenRgb}, 0.1)`
       ctx.beginPath()
       ctx.arc(cx, cy, radius, 0, Math.PI * 2)
       ctx.stroke()
